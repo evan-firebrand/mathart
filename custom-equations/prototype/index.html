@@ -1,0 +1,1943 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MathArt - Custom Equations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+     * CSS CUSTOM PROPERTIES (Design Tokens)
+     * ============================================ */
+    :root {
+      /* Colors */
+      --color-bg-primary: #0d1117;
+      --color-bg-secondary: #161b22;
+      --color-bg-tertiary: #21262d;
+      --color-bg-elevated: #2d333b;
+      --color-border: #30363d;
+      --color-border-muted: #21262d;
+
+      --color-text-primary: #e6edf3;
+      --color-text-secondary: #8b949e;
+      --color-text-muted: #6e7681;
+
+      --color-accent-primary: #58a6ff;
+      --color-accent-secondary: #a371f7;
+      --color-accent-tertiary: #f78166;
+
+      --color-success: #3fb950;
+      --color-warning: #d29922;
+      --color-error: #f85149;
+
+      /* Syntax Colors */
+      --syn-variable: #ff7b72;
+      --syn-number: #79c0ff;
+      --syn-function: #d2a8ff;
+      --syn-operator: #ff9f43;
+      --syn-bracket: #8b949e;
+      --syn-constant: #ffa657;
+
+      /* Canvas Colors */
+      --canvas-bg: #0a0a12;
+      --canvas-grid: rgba(88, 166, 255, 0.08);
+      --canvas-axis: rgba(88, 166, 255, 0.25);
+      --canvas-plot: #58a6ff;
+
+      /* Spacing */
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+
+      /* Typography */
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+      /* Borders */
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+
+      /* Shadows */
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+      --shadow-glow: 0 0 20px rgba(88, 166, 255, 0.3);
+
+      /* Transitions */
+      --transition-fast: 150ms ease;
+      --transition-normal: 250ms ease;
+      --transition-slow: 400ms ease;
+    }
+
+    /* ============================================
+     * RESET & BASE
+     * ============================================ */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--color-text-primary);
+      background-color: var(--color-bg-primary);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ============================================
+     * LAYOUT
+     * ============================================ */
+    .app {
+      display: grid;
+      grid-template-columns: 320px 1fr 300px;
+      grid-template-rows: 56px 1fr;
+      grid-template-areas:
+        "header header header"
+        "sidebar canvas params";
+      height: 100vh;
+      gap: 1px;
+      background-color: var(--color-border);
+    }
+
+    /* Header */
+    .header {
+      grid-area: header;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-4);
+      background-color: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      font-weight: 600;
+      font-size: 16px;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, var(--color-accent-primary), var(--color-accent-secondary));
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    /* Sidebar */
+    .sidebar {
+      grid-area: sidebar;
+      background-color: var(--color-bg-secondary);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Canvas Area */
+    .canvas-container {
+      grid-area: canvas;
+      background-color: var(--color-bg-primary);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Parameters Panel */
+    .params-panel {
+      grid-area: params;
+      background-color: var(--color-bg-secondary);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ============================================
+     * TABS COMPONENT
+     * ============================================ */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--color-border);
+      background-color: var(--color-bg-tertiary);
+    }
+
+    .tab {
+      padding: var(--space-3) var(--space-4);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      background: none;
+      border: none;
+      cursor: pointer;
+      position: relative;
+      transition: color var(--transition-fast);
+    }
+
+    .tab:hover {
+      color: var(--color-text-primary);
+    }
+
+    .tab.active {
+      color: var(--color-accent-primary);
+    }
+
+    .tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background-color: var(--color-accent-primary);
+    }
+
+    .tab-content {
+      flex: 1;
+      overflow: hidden;
+      display: none;
+    }
+
+    .tab-content.active {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ============================================
+     * EQUATION EDITOR
+     * ============================================ */
+    .equation-section {
+      padding: var(--space-4);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--color-text-muted);
+      margin-bottom: var(--space-2);
+    }
+
+    .equation-editor {
+      position: relative;
+    }
+
+    .equation-input {
+      width: 100%;
+      min-height: 80px;
+      padding: var(--space-3);
+      font-family: var(--font-mono);
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--color-text-primary);
+      background-color: var(--color-bg-primary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      resize: vertical;
+      outline: none;
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .equation-input:focus {
+      border-color: var(--color-accent-primary);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+    }
+
+    .equation-input::placeholder {
+      color: var(--color-text-muted);
+    }
+
+    .equation-status {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-top: var(--space-2);
+      font-size: 12px;
+    }
+
+    .status-valid {
+      color: var(--color-success);
+    }
+
+    .status-error {
+      color: var(--color-error);
+    }
+
+    .status-icon {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* ============================================
+     * TEMPLATE GALLERY
+     * ============================================ */
+    .template-gallery {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-3);
+    }
+
+    .template-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--space-3);
+    }
+
+    .template-card {
+      background-color: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .template-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--color-accent-primary);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .template-preview {
+      aspect-ratio: 1;
+      background-color: var(--canvas-bg);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .template-preview canvas {
+      width: 100%;
+      height: 100%;
+    }
+
+    .template-info {
+      padding: var(--space-2) var(--space-3);
+    }
+
+    .template-name {
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .template-equation {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--color-text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ============================================
+     * FUNCTION LIBRARY
+     * ============================================ */
+    .function-library {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-3);
+    }
+
+    .function-category {
+      margin-bottom: var(--space-4);
+    }
+
+    .category-header {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--color-text-muted);
+      margin-bottom: var(--space-2);
+      padding: 0 var(--space-2);
+    }
+
+    .function-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-1);
+    }
+
+    .function-btn {
+      padding: var(--space-1) var(--space-2);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--syn-function);
+      background-color: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .function-btn:hover {
+      background-color: var(--color-bg-elevated);
+      border-color: var(--syn-function);
+      transform: translateY(-1px);
+    }
+
+    .function-btn.operator {
+      color: var(--syn-operator);
+    }
+
+    .function-btn.operator:hover {
+      border-color: var(--syn-operator);
+    }
+
+    .function-btn.constant {
+      color: var(--syn-constant);
+    }
+
+    .function-btn.constant:hover {
+      border-color: var(--syn-constant);
+    }
+
+    /* ============================================
+     * CANVAS
+     * ============================================ */
+    .canvas-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-2) var(--space-4);
+      background-color: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+    }
+
+    .toolbar-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .toolbar-btn:hover {
+      color: var(--color-text-primary);
+      background-color: var(--color-bg-tertiary);
+      border-color: var(--color-border);
+    }
+
+    .toolbar-btn.active {
+      color: var(--color-accent-primary);
+      background-color: rgba(88, 166, 255, 0.1);
+      border-color: var(--color-accent-primary);
+    }
+
+    .toolbar-separator {
+      width: 1px;
+      height: 20px;
+      background-color: var(--color-border);
+      margin: 0 var(--space-2);
+    }
+
+    .canvas-main {
+      flex: 1;
+      position: relative;
+      background-color: var(--canvas-bg);
+    }
+
+    #visualization-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .canvas-overlay {
+      position: absolute;
+      bottom: var(--space-4);
+      left: var(--space-4);
+      display: flex;
+      gap: var(--space-4);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .canvas-info {
+      padding: var(--space-1) var(--space-2);
+      background-color: rgba(13, 17, 23, 0.8);
+      border-radius: var(--radius-sm);
+      backdrop-filter: blur(8px);
+    }
+
+    /* ============================================
+     * PARAMETERS PANEL
+     * ============================================ */
+    .params-header {
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--color-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .params-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .params-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-4);
+    }
+
+    .param-group {
+      margin-bottom: var(--space-5);
+    }
+
+    .param-item {
+      margin-bottom: var(--space-4);
+    }
+
+    .param-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-2);
+    }
+
+    .param-label {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--syn-variable);
+      font-style: italic;
+    }
+
+    .param-value {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--syn-number);
+      background-color: var(--color-bg-tertiary);
+      padding: var(--space-1) var(--space-2);
+      border-radius: var(--radius-sm);
+      min-width: 60px;
+      text-align: center;
+    }
+
+    .param-slider-container {
+      position: relative;
+      height: 24px;
+      display: flex;
+      align-items: center;
+    }
+
+    .param-slider {
+      width: 100%;
+      height: 6px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: var(--color-bg-tertiary);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .param-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      background: var(--color-accent-primary);
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: var(--shadow-md);
+      transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .param-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.15);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .param-slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: var(--color-accent-primary);
+      border-radius: 50%;
+      cursor: pointer;
+      border: none;
+      box-shadow: var(--shadow-md);
+    }
+
+    .param-range {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--color-text-muted);
+      margin-top: var(--space-1);
+    }
+
+    .param-actions {
+      display: flex;
+      gap: var(--space-1);
+      margin-top: var(--space-2);
+    }
+
+    .param-action-btn {
+      padding: var(--space-1) var(--space-2);
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      background: none;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .param-action-btn:hover {
+      color: var(--color-text-primary);
+      border-color: var(--color-text-secondary);
+    }
+
+    .param-action-btn.animate.active {
+      color: var(--color-accent-primary);
+      border-color: var(--color-accent-primary);
+      background-color: rgba(88, 166, 255, 0.1);
+    }
+
+    /* Animation Controls */
+    .animation-controls {
+      padding: var(--space-4);
+      border-top: 1px solid var(--color-border);
+      background-color: var(--color-bg-tertiary);
+    }
+
+    .animation-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-3);
+    }
+
+    .animation-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+    }
+
+    .animation-time {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .animation-timeline {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+
+    .play-btn {
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--color-success), var(--color-accent-primary));
+      border: none;
+      border-radius: 50%;
+      color: white;
+      cursor: pointer;
+      box-shadow: var(--shadow-md);
+      transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .play-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(63, 185, 80, 0.4);
+    }
+
+    .play-btn.playing {
+      background: linear-gradient(135deg, var(--color-warning), var(--color-accent-tertiary));
+    }
+
+    .timeline-slider {
+      flex: 1;
+      height: 4px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: var(--color-bg-primary);
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .timeline-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 12px;
+      height: 12px;
+      background: var(--color-text-primary);
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    /* ============================================
+     * BUTTONS
+     * ============================================ */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-4);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      border: 1px solid transparent;
+    }
+
+    .btn-primary {
+      background-color: var(--color-accent-primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #4393e6;
+      box-shadow: var(--shadow-glow);
+    }
+
+    .btn-secondary {
+      background-color: var(--color-bg-tertiary);
+      border-color: var(--color-border);
+      color: var(--color-text-primary);
+    }
+
+    .btn-secondary:hover {
+      background-color: var(--color-bg-elevated);
+      border-color: var(--color-text-muted);
+    }
+
+    .btn-ghost {
+      background: none;
+      color: var(--color-text-secondary);
+    }
+
+    .btn-ghost:hover {
+      color: var(--color-text-primary);
+      background-color: var(--color-bg-tertiary);
+    }
+
+    .btn-icon {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+    }
+
+    /* ============================================
+     * MODAL
+     * ============================================ */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity var(--transition-normal), visibility var(--transition-normal);
+    }
+
+    .modal-backdrop.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .modal {
+      background-color: var(--color-bg-secondary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-lg);
+      max-width: 600px;
+      width: 90%;
+      max-height: 80vh;
+      overflow: hidden;
+      transform: scale(0.95) translateY(10px);
+      transition: transform var(--transition-normal);
+    }
+
+    .modal-backdrop.active .modal {
+      transform: scale(1) translateY(0);
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-4) var(--space-5);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .modal-title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .modal-close {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: all var(--transition-fast);
+    }
+
+    .modal-close:hover {
+      color: var(--color-text-primary);
+      background-color: var(--color-bg-tertiary);
+    }
+
+    .modal-body {
+      padding: var(--space-5);
+      overflow-y: auto;
+      max-height: 60vh;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-3);
+      padding: var(--space-4) var(--space-5);
+      border-top: 1px solid var(--color-border);
+    }
+
+    /* ============================================
+     * TOOLTIP
+     * ============================================ */
+    .tooltip {
+      position: relative;
+    }
+
+    .tooltip::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%) translateY(-4px);
+      padding: var(--space-1) var(--space-2);
+      font-size: 11px;
+      white-space: nowrap;
+      background-color: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-md);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity var(--transition-fast), visibility var(--transition-fast);
+      z-index: 100;
+    }
+
+    .tooltip:hover::after {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* ============================================
+     * TOAST NOTIFICATION
+     * ============================================ */
+    .toast-container {
+      position: fixed;
+      bottom: var(--space-6);
+      right: var(--space-6);
+      z-index: 1100;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3) var(--space-4);
+      background-color: var(--color-bg-secondary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      transform: translateX(100%);
+      opacity: 0;
+      transition: transform var(--transition-normal), opacity var(--transition-normal);
+    }
+
+    .toast.active {
+      transform: translateX(0);
+      opacity: 1;
+    }
+
+    .toast-success {
+      border-left: 3px solid var(--color-success);
+    }
+
+    .toast-error {
+      border-left: 3px solid var(--color-error);
+    }
+
+    /* ============================================
+     * KEYBOARD SHORTCUTS HINT
+     * ============================================ */
+    .kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      padding: 2px 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      background-color: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      box-shadow: inset 0 -1px 0 var(--color-border);
+    }
+
+    /* ============================================
+     * SCROLLBAR
+     * ============================================ */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background-color: var(--color-border);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: var(--color-text-muted);
+    }
+
+    /* ============================================
+     * RESPONSIVE
+     * ============================================ */
+    @media (max-width: 1200px) {
+      .app {
+        grid-template-columns: 280px 1fr 260px;
+      }
+    }
+
+    @media (max-width: 992px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 56px 1fr auto;
+        grid-template-areas:
+          "header"
+          "canvas"
+          "panels";
+      }
+
+      .sidebar, .params-panel {
+        display: none;
+      }
+
+      .mobile-panels {
+        grid-area: panels;
+        display: flex;
+        background-color: var(--color-bg-secondary);
+      }
+    }
+
+    /* ============================================
+     * ANIMATIONS
+     * ============================================ */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateY(10px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .animate-pulse {
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .animate-spin {
+      animation: spin 1s linear infinite;
+    }
+
+    .animate-slide-in {
+      animation: slideIn 0.3s ease-out;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">∑</div>
+        <span>MathArt</span>
+        <span style="color: var(--color-text-muted); font-weight: 400;">/ Custom Equations</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-ghost tooltip" data-tooltip="Keyboard shortcuts">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M8 16h8"/>
+          </svg>
+        </button>
+        <button class="btn btn-ghost tooltip" data-tooltip="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+          </svg>
+        </button>
+        <button class="btn btn-primary" id="export-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+          </svg>
+          Export
+        </button>
+      </div>
+    </header>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="tabs">
+        <button class="tab active" data-tab="templates">Templates</button>
+        <button class="tab" data-tab="functions">Functions</button>
+      </div>
+
+      <!-- Equation Editor Section -->
+      <div class="equation-section">
+        <div class="section-label">Equation</div>
+        <div class="equation-editor">
+          <textarea
+            class="equation-input"
+            id="equation-input"
+            placeholder="Enter equation... e.g., sin(x * a) + cos(y * b)"
+            spellcheck="false"
+          >r = a * cos(n * θ) + b</textarea>
+        </div>
+        <div class="equation-status status-valid" id="equation-status">
+          <svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          <span>Valid equation • 3 parameters detected</span>
+        </div>
+      </div>
+
+      <!-- Templates Tab Content -->
+      <div class="tab-content active" data-tab-content="templates">
+        <div class="template-gallery">
+          <div class="template-grid" id="template-grid">
+            <!-- Templates will be inserted by JS -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Functions Tab Content -->
+      <div class="tab-content" data-tab-content="functions">
+        <div class="function-library">
+          <div class="function-category">
+            <div class="category-header">Trigonometric</div>
+            <div class="function-list">
+              <button class="function-btn">sin()</button>
+              <button class="function-btn">cos()</button>
+              <button class="function-btn">tan()</button>
+              <button class="function-btn">asin()</button>
+              <button class="function-btn">acos()</button>
+              <button class="function-btn">atan()</button>
+            </div>
+          </div>
+          <div class="function-category">
+            <div class="category-header">Exponential</div>
+            <div class="function-list">
+              <button class="function-btn">exp()</button>
+              <button class="function-btn">log()</button>
+              <button class="function-btn">ln()</button>
+              <button class="function-btn">sqrt()</button>
+              <button class="function-btn">pow()</button>
+            </div>
+          </div>
+          <div class="function-category">
+            <div class="category-header">Operators</div>
+            <div class="function-list">
+              <button class="function-btn operator">+</button>
+              <button class="function-btn operator">-</button>
+              <button class="function-btn operator">*</button>
+              <button class="function-btn operator">/</button>
+              <button class="function-btn operator">^</button>
+              <button class="function-btn operator">%</button>
+            </div>
+          </div>
+          <div class="function-category">
+            <div class="category-header">Constants</div>
+            <div class="function-list">
+              <button class="function-btn constant">π</button>
+              <button class="function-btn constant">e</button>
+              <button class="function-btn constant">φ</button>
+              <button class="function-btn constant">τ</button>
+            </div>
+          </div>
+          <div class="function-category">
+            <div class="category-header">Special</div>
+            <div class="function-list">
+              <button class="function-btn">abs()</button>
+              <button class="function-btn">floor()</button>
+              <button class="function-btn">ceil()</button>
+              <button class="function-btn">round()</button>
+              <button class="function-btn">sign()</button>
+              <button class="function-btn">mod()</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Canvas Container -->
+    <main class="canvas-container">
+      <div class="canvas-toolbar">
+        <div class="toolbar-group">
+          <button class="toolbar-btn tooltip" data-tooltip="Zoom in (Scroll up)" id="zoom-in">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/>
+            </svg>
+          </button>
+          <button class="toolbar-btn tooltip" data-tooltip="Zoom out (Scroll down)" id="zoom-out">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35M8 11h6"/>
+            </svg>
+          </button>
+          <button class="toolbar-btn tooltip" data-tooltip="Reset view (R)" id="reset-view">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+          </button>
+          <div class="toolbar-separator"></div>
+          <button class="toolbar-btn active tooltip" data-tooltip="Show grid" id="toggle-grid">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18"/>
+              <path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
+            </svg>
+          </button>
+          <button class="toolbar-btn active tooltip" data-tooltip="Show axes" id="toggle-axes">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v20M2 12h20"/>
+              <path d="M19 9l3 3-3 3M9 5l3-3 3 3"/>
+            </svg>
+          </button>
+        </div>
+        <div class="toolbar-group">
+          <span style="font-size: 12px; color: var(--color-text-muted); margin-right: var(--space-2);">
+            Zoom: <span id="zoom-level">100%</span>
+          </span>
+          <button class="toolbar-btn tooltip" data-tooltip="Fullscreen (F)" id="fullscreen-btn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="canvas-main">
+        <canvas id="visualization-canvas"></canvas>
+        <div class="canvas-overlay">
+          <div class="canvas-info" id="cursor-pos">x: 0.00, y: 0.00</div>
+          <div class="canvas-info" id="render-time">Render: 2.4ms</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Parameters Panel -->
+    <aside class="params-panel">
+      <div class="params-header">
+        <span class="params-title">Parameters</span>
+        <button class="btn btn-ghost btn-icon tooltip" data-tooltip="Reset all" id="reset-params">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </button>
+      </div>
+      <div class="params-content">
+        <div class="param-group">
+          <div class="param-item animate-slide-in" style="animation-delay: 0ms;">
+            <div class="param-header">
+              <span class="param-label">a</span>
+              <span class="param-value" id="param-a-value">2.0</span>
+            </div>
+            <div class="param-slider-container">
+              <input type="range" class="param-slider" id="param-a" min="-5" max="5" step="0.1" value="2">
+            </div>
+            <div class="param-range">
+              <span>-5</span>
+              <span>5</span>
+            </div>
+            <div class="param-actions">
+              <button class="param-action-btn animate" id="animate-a">Animate</button>
+              <button class="param-action-btn">Edit range</button>
+            </div>
+          </div>
+
+          <div class="param-item animate-slide-in" style="animation-delay: 50ms;">
+            <div class="param-header">
+              <span class="param-label">b</span>
+              <span class="param-value" id="param-b-value">1.0</span>
+            </div>
+            <div class="param-slider-container">
+              <input type="range" class="param-slider" id="param-b" min="-5" max="5" step="0.1" value="1">
+            </div>
+            <div class="param-range">
+              <span>-5</span>
+              <span>5</span>
+            </div>
+            <div class="param-actions">
+              <button class="param-action-btn animate" id="animate-b">Animate</button>
+              <button class="param-action-btn">Edit range</button>
+            </div>
+          </div>
+
+          <div class="param-item animate-slide-in" style="animation-delay: 100ms;">
+            <div class="param-header">
+              <span class="param-label">n</span>
+              <span class="param-value" id="param-n-value">5</span>
+            </div>
+            <div class="param-slider-container">
+              <input type="range" class="param-slider" id="param-n" min="1" max="12" step="1" value="5">
+            </div>
+            <div class="param-range">
+              <span>1</span>
+              <span>12</span>
+            </div>
+            <div class="param-actions">
+              <button class="param-action-btn animate active" id="animate-n">Animate</button>
+              <button class="param-action-btn">Edit range</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animation Controls -->
+      <div class="animation-controls">
+        <div class="animation-header">
+          <span class="animation-title">Animation</span>
+          <span class="animation-time" id="animation-time">0:00 / 0:10</span>
+        </div>
+        <div class="animation-timeline">
+          <button class="play-btn" id="play-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" id="play-icon">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+          </button>
+          <input type="range" class="timeline-slider" id="timeline" min="0" max="100" value="0">
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Export Modal -->
+  <div class="modal-backdrop" id="export-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Export Visualization</span>
+        <button class="modal-close" id="close-modal">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 6L6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom: var(--space-4);">
+          <div class="section-label">Format</div>
+          <div style="display: flex; gap: var(--space-2); margin-top: var(--space-2);">
+            <button class="btn btn-secondary" style="flex: 1;">PNG</button>
+            <button class="btn btn-primary" style="flex: 1;">SVG</button>
+            <button class="btn btn-secondary" style="flex: 1;">MP4</button>
+            <button class="btn btn-secondary" style="flex: 1;">GIF</button>
+          </div>
+        </div>
+        <div style="margin-bottom: var(--space-4);">
+          <div class="section-label">Resolution</div>
+          <div style="display: flex; gap: var(--space-2); margin-top: var(--space-2);">
+            <button class="btn btn-secondary" style="flex: 1;">1080p</button>
+            <button class="btn btn-primary" style="flex: 1;">2K</button>
+            <button class="btn btn-secondary" style="flex: 1;">4K</button>
+          </div>
+        </div>
+        <div>
+          <div class="section-label">Background</div>
+          <div style="display: flex; gap: var(--space-2); margin-top: var(--space-2);">
+            <button class="btn btn-primary" style="flex: 1;">Dark</button>
+            <button class="btn btn-secondary" style="flex: 1;">Light</button>
+            <button class="btn btn-secondary" style="flex: 1;">Transparent</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="cancel-export">Cancel</button>
+        <button class="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+          </svg>
+          Download
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    // ============================================
+    // APPLICATION STATE
+    // ============================================
+    const state = {
+      equation: 'r = a * cos(n * θ) + b',
+      params: {
+        a: 2.0,
+        b: 1.0,
+        n: 5
+      },
+      animation: {
+        playing: false,
+        time: 0,
+        duration: 10,
+        animatedParams: ['n']
+      },
+      canvas: {
+        zoom: 1,
+        offsetX: 0,
+        offsetY: 0,
+        showGrid: true,
+        showAxes: true
+      }
+    };
+
+    // ============================================
+    // TEMPLATES DATA
+    // ============================================
+    const templates = [
+      { name: 'Rose Curve', equation: 'r = a * cos(n * θ)', params: { a: 2, n: 5 } },
+      { name: 'Spiral', equation: 'r = a * θ', params: { a: 0.5 } },
+      { name: 'Lissajous', equation: 'x = sin(a*t), y = cos(b*t)', params: { a: 3, b: 4 } },
+      { name: 'Butterfly', equation: 'r = e^sin(θ) - 2cos(4θ)', params: {} },
+      { name: 'Cardioid', equation: 'r = a * (1 + cos(θ))', params: { a: 2 } },
+      { name: 'Lemniscate', equation: 'r² = a² * cos(2θ)', params: { a: 3 } },
+      { name: 'Epicycloid', equation: 'x = (R+r)cos(t) - r*cos((R+r)t/r)', params: { R: 3, r: 1 } },
+      { name: 'Hypocycloid', equation: 'x = (R-r)cos(t) + r*cos((R-r)t/r)', params: { R: 5, r: 2 } },
+    ];
+
+    // ============================================
+    // DOM ELEMENTS
+    // ============================================
+    const canvas = document.getElementById('visualization-canvas');
+    const ctx = canvas.getContext('2d');
+    const equationInput = document.getElementById('equation-input');
+    const playBtn = document.getElementById('play-btn');
+    const playIcon = document.getElementById('play-icon');
+    const timelineSlider = document.getElementById('timeline');
+    const exportModal = document.getElementById('export-modal');
+    const templateGrid = document.getElementById('template-grid');
+
+    // ============================================
+    // CANVAS SETUP & RENDERING
+    // ============================================
+    function setupCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      ctx.scale(dpr, dpr);
+      render();
+    }
+
+    function render() {
+      const startTime = performance.now();
+      const width = canvas.width / (window.devicePixelRatio || 1);
+      const height = canvas.height / (window.devicePixelRatio || 1);
+      const centerX = width / 2 + state.canvas.offsetX;
+      const centerY = height / 2 + state.canvas.offsetY;
+      const scale = 40 * state.canvas.zoom;
+
+      // Clear canvas
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(0, 0, width, height);
+
+      // Draw grid
+      if (state.canvas.showGrid) {
+        drawGrid(width, height, centerX, centerY, scale);
+      }
+
+      // Draw axes
+      if (state.canvas.showAxes) {
+        drawAxes(width, height, centerX, centerY);
+      }
+
+      // Draw the curve
+      drawCurve(centerX, centerY, scale);
+
+      // Update render time
+      const renderTime = (performance.now() - startTime).toFixed(1);
+      document.getElementById('render-time').textContent = `Render: ${renderTime}ms`;
+    }
+
+    function drawGrid(width, height, centerX, centerY, scale) {
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.08)';
+      ctx.lineWidth = 1;
+
+      const gridSize = scale;
+      const startX = centerX % gridSize;
+      const startY = centerY % gridSize;
+
+      ctx.beginPath();
+      for (let x = startX; x < width; x += gridSize) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+      }
+      for (let y = startY; y < height; y += gridSize) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+      }
+      ctx.stroke();
+    }
+
+    function drawAxes(width, height, centerX, centerY) {
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.25)';
+      ctx.lineWidth = 1.5;
+
+      ctx.beginPath();
+      ctx.moveTo(0, centerY);
+      ctx.lineTo(width, centerY);
+      ctx.moveTo(centerX, 0);
+      ctx.lineTo(centerX, height);
+      ctx.stroke();
+
+      // Arrow heads
+      ctx.fillStyle = 'rgba(88, 166, 255, 0.25)';
+      // X arrow
+      ctx.beginPath();
+      ctx.moveTo(width - 10, centerY - 5);
+      ctx.lineTo(width, centerY);
+      ctx.lineTo(width - 10, centerY + 5);
+      ctx.fill();
+      // Y arrow
+      ctx.beginPath();
+      ctx.moveTo(centerX - 5, 10);
+      ctx.lineTo(centerX, 0);
+      ctx.lineTo(centerX + 5, 10);
+      ctx.fill();
+    }
+
+    function drawCurve(centerX, centerY, scale) {
+      const { a, b, n } = state.params;
+      const points = [];
+
+      // Generate points for a rose curve: r = a * cos(n * θ) + b
+      for (let theta = 0; theta <= Math.PI * 2 * n; theta += 0.01) {
+        const r = a * Math.cos(n * theta) + b;
+        const x = centerX + r * Math.cos(theta) * scale;
+        const y = centerY - r * Math.sin(theta) * scale;
+        points.push({ x, y });
+      }
+
+      // Draw glow effect
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.3)';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+
+      // Draw main line
+      const gradient = ctx.createLinearGradient(centerX - scale * 3, 0, centerX + scale * 3, 0);
+      gradient.addColorStop(0, '#58a6ff');
+      gradient.addColorStop(0.5, '#a371f7');
+      gradient.addColorStop(1, '#58a6ff');
+
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    }
+
+    // ============================================
+    // TEMPLATE GALLERY
+    // ============================================
+    function renderTemplates() {
+      templateGrid.innerHTML = templates.map((t, i) => `
+        <div class="template-card" data-index="${i}">
+          <div class="template-preview">
+            <canvas id="template-canvas-${i}" width="140" height="140"></canvas>
+          </div>
+          <div class="template-info">
+            <div class="template-name">${t.name}</div>
+            <div class="template-equation">${t.equation}</div>
+          </div>
+        </div>
+      `).join('');
+
+      // Render mini previews
+      templates.forEach((t, i) => {
+        renderTemplatePreview(i, t);
+      });
+
+      // Add click handlers
+      document.querySelectorAll('.template-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const index = parseInt(card.dataset.index);
+          const template = templates[index];
+          equationInput.value = template.equation;
+          showToast(`Loaded "${template.name}" template`, 'success');
+          render();
+        });
+      });
+    }
+
+    function renderTemplatePreview(index, template) {
+      const canvas = document.getElementById(`template-canvas-${index}`);
+      const ctx = canvas.getContext('2d');
+      const size = 140;
+      const center = size / 2;
+      const scale = 15;
+
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(0, 0, size, size);
+
+      // Simple rose curve for preview
+      const a = template.params.a || 2;
+      const n = template.params.n || 5;
+
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+
+      for (let theta = 0; theta <= Math.PI * 2 * n; theta += 0.02) {
+        const r = a * Math.cos(n * theta);
+        const x = center + r * Math.cos(theta) * scale;
+        const y = center - r * Math.sin(theta) * scale;
+        if (theta === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // ============================================
+    // PARAMETER CONTROLS
+    // ============================================
+    function setupParamSliders() {
+      ['a', 'b', 'n'].forEach(param => {
+        const slider = document.getElementById(`param-${param}`);
+        const valueDisplay = document.getElementById(`param-${param}-value`);
+
+        slider.addEventListener('input', (e) => {
+          const value = parseFloat(e.target.value);
+          state.params[param] = value;
+          valueDisplay.textContent = param === 'n' ? value : value.toFixed(1);
+          render();
+        });
+      });
+    }
+
+    // ============================================
+    // ANIMATION SYSTEM
+    // ============================================
+    let animationFrame;
+
+    function toggleAnimation() {
+      state.animation.playing = !state.animation.playing;
+
+      if (state.animation.playing) {
+        playBtn.classList.add('playing');
+        playIcon.innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+        animationFrame = requestAnimationFrame(animationLoop);
+      } else {
+        playBtn.classList.remove('playing');
+        playIcon.innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
+        cancelAnimationFrame(animationFrame);
+      }
+    }
+
+    function animationLoop(timestamp) {
+      if (!state.animation.playing) return;
+
+      state.animation.time += 0.016; // ~60fps
+      if (state.animation.time >= state.animation.duration) {
+        state.animation.time = 0;
+      }
+
+      // Animate the 'n' parameter
+      const progress = state.animation.time / state.animation.duration;
+      const n = 1 + Math.floor(progress * 11); // 1 to 12
+      state.params.n = n;
+      document.getElementById('param-n').value = n;
+      document.getElementById('param-n-value').textContent = n;
+
+      // Update timeline
+      timelineSlider.value = progress * 100;
+      updateTimeDisplay();
+
+      render();
+      animationFrame = requestAnimationFrame(animationLoop);
+    }
+
+    function updateTimeDisplay() {
+      const current = Math.floor(state.animation.time);
+      const total = state.animation.duration;
+      document.getElementById('animation-time').textContent =
+        `0:${current.toString().padStart(2, '0')} / 0:${total.toString().padStart(2, '0')}`;
+    }
+
+    // ============================================
+    // TOOLBAR CONTROLS
+    // ============================================
+    function setupToolbar() {
+      document.getElementById('zoom-in').addEventListener('click', () => {
+        state.canvas.zoom = Math.min(state.canvas.zoom * 1.2, 5);
+        updateZoomDisplay();
+        render();
+      });
+
+      document.getElementById('zoom-out').addEventListener('click', () => {
+        state.canvas.zoom = Math.max(state.canvas.zoom / 1.2, 0.2);
+        updateZoomDisplay();
+        render();
+      });
+
+      document.getElementById('reset-view').addEventListener('click', () => {
+        state.canvas.zoom = 1;
+        state.canvas.offsetX = 0;
+        state.canvas.offsetY = 0;
+        updateZoomDisplay();
+        render();
+      });
+
+      document.getElementById('toggle-grid').addEventListener('click', (e) => {
+        state.canvas.showGrid = !state.canvas.showGrid;
+        e.currentTarget.classList.toggle('active', state.canvas.showGrid);
+        render();
+      });
+
+      document.getElementById('toggle-axes').addEventListener('click', (e) => {
+        state.canvas.showAxes = !state.canvas.showAxes;
+        e.currentTarget.classList.toggle('active', state.canvas.showAxes);
+        render();
+      });
+
+      document.getElementById('fullscreen-btn').addEventListener('click', () => {
+        if (document.fullscreenElement) {
+          document.exitFullscreen();
+        } else {
+          document.querySelector('.canvas-container').requestFullscreen();
+        }
+      });
+    }
+
+    function updateZoomDisplay() {
+      document.getElementById('zoom-level').textContent = Math.round(state.canvas.zoom * 100) + '%';
+    }
+
+    // ============================================
+    // CANVAS INTERACTIONS
+    // ============================================
+    function setupCanvasInteractions() {
+      let isDragging = false;
+      let lastX, lastY;
+
+      canvas.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        canvas.style.cursor = 'grabbing';
+      });
+
+      canvas.addEventListener('mousemove', (e) => {
+        // Update cursor position display
+        const rect = canvas.getBoundingClientRect();
+        const width = rect.width;
+        const height = rect.height;
+        const scale = 40 * state.canvas.zoom;
+        const x = ((e.clientX - rect.left - width / 2 - state.canvas.offsetX) / scale).toFixed(2);
+        const y = (-(e.clientY - rect.top - height / 2 - state.canvas.offsetY) / scale).toFixed(2);
+        document.getElementById('cursor-pos').textContent = `x: ${x}, y: ${y}`;
+
+        if (isDragging) {
+          state.canvas.offsetX += e.clientX - lastX;
+          state.canvas.offsetY += e.clientY - lastY;
+          lastX = e.clientX;
+          lastY = e.clientY;
+          render();
+        }
+      });
+
+      canvas.addEventListener('mouseup', () => {
+        isDragging = false;
+        canvas.style.cursor = 'default';
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        isDragging = false;
+        canvas.style.cursor = 'default';
+      });
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+        state.canvas.zoom = Math.max(0.2, Math.min(5, state.canvas.zoom * zoomFactor));
+        updateZoomDisplay();
+        render();
+      });
+    }
+
+    // ============================================
+    // TABS
+    // ============================================
+    function setupTabs() {
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const tabName = tab.dataset.tab;
+
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+          tab.classList.add('active');
+          document.querySelector(`[data-tab-content="${tabName}"]`).classList.add('active');
+        });
+      });
+    }
+
+    // ============================================
+    // MODAL
+    // ============================================
+    function setupModal() {
+      document.getElementById('export-btn').addEventListener('click', () => {
+        exportModal.classList.add('active');
+      });
+
+      document.getElementById('close-modal').addEventListener('click', () => {
+        exportModal.classList.remove('active');
+      });
+
+      document.getElementById('cancel-export').addEventListener('click', () => {
+        exportModal.classList.remove('active');
+      });
+
+      exportModal.addEventListener('click', (e) => {
+        if (e.target === exportModal) {
+          exportModal.classList.remove('active');
+        }
+      });
+    }
+
+    // ============================================
+    // TOAST NOTIFICATIONS
+    // ============================================
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          ${type === 'success'
+            ? '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'
+            : '<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>'}
+        </svg>
+        <span>${message}</span>
+      `;
+
+      container.appendChild(toast);
+
+      // Trigger animation
+      requestAnimationFrame(() => {
+        toast.classList.add('active');
+      });
+
+      // Remove after 3 seconds
+      setTimeout(() => {
+        toast.classList.remove('active');
+        setTimeout(() => toast.remove(), 300);
+      }, 3000);
+    }
+
+    // ============================================
+    // FUNCTION BUTTONS
+    // ============================================
+    function setupFunctionButtons() {
+      document.querySelectorAll('.function-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const func = btn.textContent;
+          const input = document.getElementById('equation-input');
+          const pos = input.selectionStart;
+          const text = input.value;
+          input.value = text.slice(0, pos) + func + text.slice(pos);
+          input.focus();
+          input.setSelectionRange(pos + func.length - 1, pos + func.length - 1);
+          showToast(`Inserted ${func}`, 'success');
+        });
+      });
+    }
+
+    // ============================================
+    // ANIMATE BUTTONS
+    // ============================================
+    function setupAnimateButtons() {
+      ['a', 'b', 'n'].forEach(param => {
+        const btn = document.getElementById(`animate-${param}`);
+        if (btn) {
+          btn.addEventListener('click', () => {
+            btn.classList.toggle('active');
+            if (btn.classList.contains('active')) {
+              if (!state.animation.animatedParams.includes(param)) {
+                state.animation.animatedParams.push(param);
+              }
+            } else {
+              state.animation.animatedParams = state.animation.animatedParams.filter(p => p !== param);
+            }
+          });
+        }
+      });
+    }
+
+    // ============================================
+    // KEYBOARD SHORTCUTS
+    // ============================================
+    function setupKeyboardShortcuts() {
+      document.addEventListener('keydown', (e) => {
+        // Don't trigger shortcuts when typing in input
+        if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+
+        switch(e.key.toLowerCase()) {
+          case ' ':
+            e.preventDefault();
+            toggleAnimation();
+            break;
+          case 'r':
+            state.canvas.zoom = 1;
+            state.canvas.offsetX = 0;
+            state.canvas.offsetY = 0;
+            updateZoomDisplay();
+            render();
+            break;
+          case 'f':
+            if (document.fullscreenElement) {
+              document.exitFullscreen();
+            } else {
+              document.querySelector('.canvas-container').requestFullscreen();
+            }
+            break;
+          case 'g':
+            state.canvas.showGrid = !state.canvas.showGrid;
+            document.getElementById('toggle-grid').classList.toggle('active', state.canvas.showGrid);
+            render();
+            break;
+        }
+      });
+    }
+
+    // ============================================
+    // INITIALIZATION
+    // ============================================
+    function init() {
+      setupCanvas();
+      renderTemplates();
+      setupParamSliders();
+      setupToolbar();
+      setupCanvasInteractions();
+      setupTabs();
+      setupModal();
+      setupFunctionButtons();
+      setupAnimateButtons();
+      setupKeyboardShortcuts();
+
+      playBtn.addEventListener('click', toggleAnimation);
+
+      timelineSlider.addEventListener('input', (e) => {
+        state.animation.time = (e.target.value / 100) * state.animation.duration;
+        updateTimeDisplay();
+      });
+
+      window.addEventListener('resize', setupCanvas);
+
+      // Initial render
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>
