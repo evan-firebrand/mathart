@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wake — Heritage — UMAT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;1,400&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0e1018; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Cormorant Garamond', Georgia, serif; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script src="umat-genome.js"></script>
+<script>
+'use strict';
+const G=UMAT.Genome;
+const schema=G.TraitSchema({hue:{kernel:'circular_gaussian',sigma:12,range:[0,360]},a:{kernel:'gaussian',sigma:0.10,clip:[-2.5,2.5]},b:{kernel:'gaussian',sigma:0.10,clip:[-2.5,2.5]},c:{kernel:'gaussian',sigma:0.10,clip:[-2.5,2.5]},d:{kernel:'gaussian',sigma:0.10,clip:[-2.5,2.5]}},{seed:77});
+const FOUNDER_PARAMS=[{hue:10,a:-1.7,b:1.8,c:-1.9,d:-0.4},{hue:85,a:1.5,b:-1.8,c:1.6,d:0.9},{hue:195,a:-1.4,b:1.6,c:1.0,d:0.7},{hue:270,a:-1.3,b:-1.8,c:-1.9,d:-1.0},{hue:330,a:1.7,b:0.7,c:1.8,d:1.2}];
+const N_FOUNDERS=FOUNDER_PARAMS.length,MAX_AGENTS=20;
+const registry=G.LineageRegistry(N_FOUNDERS,{trackTraits:['hue','a'],fadingThreshold:0.25});
+const SPLIT_INTERVAL=220,MAX_AGE=900,STEPS_PER_TICK=300;
+let agents=[],tick=0;
+function makeAgent(genome,lineageId,born){return{genome,lineageId,born,age:0,x:(Math.random()-0.5)*0.4,y:(Math.random()-0.5)*0.4,alive:true,get hue(){return this.genome.hue;}};}
+function initAgents(){agents=[];tick=0;for(let f=0;f<N_FOUNDERS;f++){const p=FOUNDER_PARAMS[f],genome=schema.makeGenome(p),agent=makeAgent(genome,f,0);agents.push(agent);registry.recordBirth(f,0);}}
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const W=900,H=680,SIM_W=656,STRIP_X=662,STRIP_W=W-STRIP_X-6;
+const ATTR_SCALE=Math.min(SIM_W,H)/4.4,ATTR_CX=SIM_W/2,ATTR_CY=H/2;
+canvas.width=W;canvas.height=H;
+const offCanvas=document.createElement('canvas');offCanvas.width=SIM_W;offCanvas.height=H;
+const off=offCanvas.getContext('2d');off.fillStyle='#0e1018';off.fillRect(0,0,SIM_W,H);
+function attrToScreen(x,y){return[ATTR_CX+x*ATTR_SCALE,ATTR_CY+y*ATTR_SCALE];}
+function simStep(){
+  const rng=schema._rng;
+  off.globalAlpha=0.012;off.fillStyle='#0e1018';off.fillRect(0,0,SIM_W,H);off.globalAlpha=1;
+  for(const ag of agents){
+    if(!ag.alive)continue;
+    const{a,b,c,d,hue}=ag.genome;
+    off.globalAlpha=0.055;
+    for(let s=0;s<STEPS_PER_TICK;s++){const nx=Math.sin(a*ag.y)-Math.cos(b*ag.x),ny=Math.sin(c*ag.x)-Math.cos(d*ag.y);ag.x=nx;ag.y=ny;const[sx,sy]=attrToScreen(nx,ny);if(sx<0||sx>=SIM_W||sy<0||sy>=H)continue;off.fillStyle=`hsla(${hue|0},70%,68%,1)`;off.fillRect(sx,sy,1,1);}
+    off.globalAlpha=1;ag.age++;
+  }
+  const living=agents.filter(a=>a.alive),births=[];
+  for(const ag of living){
+    if(!ag.alive)continue;
+    if(ag.age>0&&ag.age%SPLIT_INTERVAL===0&&agents.length<MAX_AGENTS){
+      const others=living.filter(o=>o!==ag),parentB=others.length>0?others[Math.floor(rng()*others.length)]:ag;
+      const child=makeAgent(schema.inherit(ag.genome,parentB.genome),ag.lineageId,tick);
+      child.x=ag.x+(rng()-0.5)*0.1;child.y=ag.y+(rng()-0.5)*0.1;
+      births.push({child,lineageId:ag.lineageId});
+    }
+  }
+  for(const{child,lineageId}of births){agents.push(child);registry.recordBirth(lineageId,tick);}
+  for(const ag of agents){if(!ag.alive)continue;if(ag.age>=MAX_AGE){ag.alive=false;registry.recordDeath(ag.lineageId,tick);}}
+  if(agents.length>MAX_AGENTS*2)agents=agents.filter(a=>a.alive);
+  for(let f=0;f<N_FOUNDERS;f++){if(registry.isExtinct(f))continue;const lv=agents.filter(a=>a.alive&&a.lineageId===f);if(!lv.length)continue;registry.updateMeanTrait(f,'hue',G.circularMean(lv.map(a=>a.genome.hue),[0,360]));registry.updateMeanTrait(f,'a',lv.map(a=>a.genome.a).reduce((s,v)=>s+v,0)/lv.length);}
+  tick++;
+}
+function drawBrackets(x,y,w,h,len,col){ctx.strokeStyle=col;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,y+len);ctx.lineTo(x,y);ctx.lineTo(x+len,y);ctx.stroke();ctx.beginPath();ctx.moveTo(x+w-len,y);ctx.lineTo(x+w,y);ctx.lineTo(x+w,y+len);ctx.stroke();ctx.beginPath();ctx.moveTo(x,y+h-len);ctx.lineTo(x,y+h);ctx.lineTo(x+len,y+h);ctx.stroke();ctx.beginPath();ctx.moveTo(x+w-len,y+h);ctx.lineTo(x+w,y+h);ctx.lineTo(x+w,y+h-len);ctx.stroke();}
+function renderFrame(){
+  ctx.fillStyle='#0e1018';ctx.fillRect(0,0,W,H);ctx.drawImage(offCanvas,0,0);
+  ctx.fillStyle='rgba(200,184,162,0.07)';ctx.fillRect(SIM_W,0,1,H);
+  ctx.fillStyle='rgba(14,16,24,0.90)';ctx.fillRect(STRIP_X,0,W-STRIP_X,H);
+  ctx.font='11px "JetBrains Mono",monospace';ctx.fillStyle='rgba(200,184,162,0.38)';ctx.fillText('LINEAGES',STRIP_X+6,22);
+  const snap=registry.snapshot(tick),living=agents.filter(a=>a.alive);
+  snap.forEach((s,row)=>{
+    const y=38+row*108,fHue=FOUNDER_PARAMS[s.id].hue,mHue=s.meanTrait.hue??fHue,mA=s.meanTrait.a??FOUNDER_PARAMS[s.id].a,st=s.status;
+    const bw=STRIP_W-12,frac=s.peak>0?Math.min(1,s.count/s.peak):0;
+    const col=st==='extinct'?'rgba(200,184,162,0.18)':st==='fading'?`hsla(${mHue|0},40%,50%,0.7)`:`hsla(${mHue|0},68%,62%,0.88)`;
+    ctx.fillStyle='rgba(200,184,162,0.06)';ctx.fillRect(STRIP_X+6,y,bw,5);
+    ctx.fillStyle=col;ctx.fillRect(STRIP_X+6,y,bw*frac,5);
+    ctx.fillStyle=st==='extinct'?'rgba(200,184,162,0.12)':`hsla(${mHue|0},62%,56%,1)`;ctx.fillRect(STRIP_X+6,y+9,10,10);
+    ctx.font='10px "JetBrains Mono",monospace';ctx.fillStyle=col;ctx.fillText(`L${s.id}  ${st.toUpperCase().slice(0,3)}`,STRIP_X+20,y+19);
+    ctx.fillStyle='rgba(200,184,162,0.50)';ctx.fillText(`n=${s.count}  pk=${s.peak}`,STRIP_X+6,y+34);ctx.fillText(`age ${s.age}`,STRIP_X+6,y+47);
+    const hd=G.signedCircularDiff(mHue,fHue,[0,360]);
+    ctx.fillStyle=st==='extinct'?'rgba(200,184,162,0.25)':Math.abs(hd)<20?'rgba(200,184,162,0.50)':hd>0?'rgba(255,190,100,0.80)':'rgba(100,190,255,0.80)';
+    ctx.fillText(`hΔ ${hd>=0?'+':''}${Math.round(hd)}°`,STRIP_X+6,y+60);
+    ctx.fillStyle='rgba(200,184,162,0.40)';ctx.fillText(`a=${mA.toFixed(2)}`,STRIP_X+6,y+73);
+    ctx.fillStyle='rgba(200,184,162,0.08)';ctx.fillRect(STRIP_X+6,y+84,bw,1);
+  });
+  const statY=38+snap.length*108+8;
+  if(statY<H-60){ctx.font='10px "JetBrains Mono",monospace';ctx.fillStyle='rgba(200,184,162,0.30)';ctx.fillText(`agents ${living.length}`,STRIP_X+6,statY);ctx.fillText(`alive  ${registry.aliveCount()}`,STRIP_X+6,statY+14);ctx.fillText(`extinct ${registry.extinctCount()}`,STRIP_X+6,statY+28);}
+  drawBrackets(6,6,SIM_W-12,H-12,18,'rgba(200,184,162,0.20)');
+  ctx.font='italic 12px "Cormorant Garamond",Georgia,serif';ctx.fillStyle='rgba(200,184,162,0.42)';
+  ctx.fillText(`Wake — Heritage  ·  tick ${tick}  ·  ${living.length} agents  ·  Clifford attractor`,14,H-14);
+}
+let lastTime=0;const TARGET_MS=40;
+function loop(ts){requestAnimationFrame(loop);if(ts-lastTime<TARGET_MS)return;lastTime=ts;simStep();renderFrame();}
+initAgents();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
