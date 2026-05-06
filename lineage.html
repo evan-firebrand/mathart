@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lineage — UMAT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;1,400&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #16120e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Cormorant Garamond', Georgia, serif;
+    }
+    canvas { display: block; cursor: default; }
+  </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script src="umat-genome.js"></script>
+<script>
+'use strict';
+const EnergyField = (() => {
+  const RES = 64;
+  const field = new Float32Array(RES * RES);
+  const tmp   = new Float32Array(RES * RES);
+  let cfg = { replenishRate: 0.005, diffusionRate: 0.12, depositRadius: 0.055 };
+  function _coord(u) { return (u + 1) / 2 * (RES - 1); }
+  function sample(ux, uy) {
+    const fx = Math.max(0, Math.min(RES - 1.001, _coord(ux)));
+    const fy = Math.max(0, Math.min(RES - 1.001, _coord(uy)));
+    const x0 = fx | 0, y0 = fy | 0, x1 = x0 + 1, y1 = y0 + 1;
+    const tx = fx - x0, ty = fy - y0;
+    return (1-tx)*(1-ty)*field[y0*RES+x0] + tx*(1-ty)*field[y0*RES+x1] + (1-tx)*ty*field[y1*RES+x0] + tx*ty*field[y1*RES+x1];
+  }
+  function deposit(ux, uy, amount) {
+    const cx = _coord(ux), cy = _coord(uy);
+    const sigma = cfg.depositRadius * (RES / 2);
+    const range = Math.ceil(sigma * 2.5) | 0;
+    const inv2s2 = 1 / (2 * sigma * sigma);
+    for (let dy = -range; dy <= range; dy++) {
+      const iy = (cy|0) + dy;
+      if (iy < 0 || iy >= RES) continue;
+      for (let dx = -range; dx <= range; dx++) {
+        const ix = (cx|0) + dx;
+        if (ix < 0 || ix >= RES) continue;
+        const w = Math.exp(-(( ix-cx)*(ix-cx)+(iy-cy)*(iy-cy))*inv2s2);
+        const idx = iy*RES+ix;
+        field[idx] = Math.max(0, Math.min(1, field[idx] + amount * w));
+      }
+    }
+  }
+  function step() {
+    const dr = cfg.diffusionRate;
+    for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
+      const idx = y*RES+x; let sum=0, n=0;
+      if (x>0){sum+=field[idx-1];n++;} if(x<RES-1){sum+=field[idx+1];n++;}
+      if (y>0){sum+=field[idx-RES];n++;} if(y<RES-1){sum+=field[idx+RES];n++;}
+      tmp[idx] = field[idx]*(1-dr) + (n>0?sum/n:field[idx])*dr;
+    }
+    for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
+      const ux=x/(RES-1)*2-1, uy=y/(RES-1)*2-1, r2=ux*ux+uy*uy, idx=y*RES+x;
+      if (r2>1){field[idx]=tmp[idx]=0;continue;}
+      const cap=Math.max(0,1-r2);
+      field[idx]=Math.max(0,Math.min(cap,tmp[idx]+(cap-tmp[idx])*cfg.replenishRate));
+    }
+  }
+  function render(ctx, cx, cy, radius) {
+    const oc=document.createElement('canvas'); oc.width=RES; oc.height=RES;
+    const octx=oc.getContext('2d'); const id=octx.createImageData(RES,RES); const d=id.data;
+    for(let i=0;i<RES*RES;i++){const v=field[i];d[i*4]=(v*100+12)|0;d[i*4+1]=(v*64+8)|0;d[i*4+2]=(v*20)|0;d[i*4+3]=(v*160+25)|0;}
+    octx.putImageData(id,0,0);
+    ctx.save(); ctx.globalAlpha=0.55; ctx.drawImage(oc,cx-radius,cy-radius,radius*2,radius*2); ctx.restore();
+  }
+  function stats() {
+    let mn=1,mx=0,total=0,n=0;
+    for(let i=0;i<field.length;i++){if(!field[i])continue;mn=Math.min(mn,field[i]);mx=Math.max(mx,field[i]);total+=field[i];n++;}
+    return{min:n?mn:0,max:n?mx:0,total,mean:n?total/n:0};
+  }
+  function setConfig(c){Object.assign(cfg,c);}
+  for(let y=0;y<RES;y++)for(let x=0;x<RES;x++){const ux=x/(RES-1)*2-1,uy=y/(RES-1)*2-1,r2=ux*ux+uy*uy;if(r2<=1)field[y*RES+x]=0.55*(1-r2);}
+  return{sample,deposit,step,render,stats,setConfig};
+})();
+
+const N_FOUNDERS=6, INIT_PER_FOUNDER=10, MAX_NODES=1000, RING_RADIUS=0.30;
+const FOUNDER_HUES=[0,60,120,180,240,300];
+const FOUNDER_THRESHOLDS=[0.42,0.50,0.38,0.55,0.46,0.52];
+const FOUNDER_GROWTHS=[0.55,0.40,0.60,0.35,0.50,0.45];
+const G=UMAT.Genome;
+const schema=G.TraitSchema({hue:{kernel:'circular_gaussian',sigma:8,range:[0,360]},threshold:{kernel:'gaussian',sigma:0.04,clip:[0.05,0.95]},growth:{kernel:'gaussian',sigma:0.03,clip:[0.03,0.85]},jitter:{kernel:'log_normal',sigma:0.20,clip:[0.0005,0.04]}},{seed:42});
+const registry=G.LineageRegistry(N_FOUNDERS,{trackTraits:['hue'],fadingThreshold:0.30});
+const px=new Float32Array(MAX_NODES),py=new Float32Array(MAX_NODES),ax=new Float32Array(MAX_NODES),ay=new Float32Array(MAX_NODES);
+const nxt=new Int32Array(MAX_NODES).fill(-1),prv=new Int32Array(MAX_NODES).fill(-1),lin=new Int32Array(MAX_NODES).fill(-1);
+const alive=new Uint8Array(MAX_NODES),nodeAge=new Int32Array(MAX_NODES),genomes=new Array(MAX_NODES).fill(null);
+let nodeCount=0,nextNodeId=0; const freePool=[];
+function allocNode(){if(freePool.length>0)return freePool.pop();if(nextNodeId<MAX_NODES)return nextNodeId++;return -1;}
+function insertAfter(r,n){const nx=nxt[r];nxt[n]=nx;prv[n]=r;nxt[r]=n;if(nx!==-1)prv[nx]=n;}
+function removeFromRing(id){const p=prv[id],n=nxt[id];if(p!==-1)nxt[p]=n;if(n!==-1)prv[n]=p;alive[id]=0;genomes[id]=null;lin[id]=-1;nxt[id]=prv[id]=-1;freePool.push(id);nodeCount--;}
+let ringEntry=-1;
+function updateRingEntry(){if(ringEntry!==-1&&alive[ringEntry])return;ringEntry=-1;for(let i=0;i<nextNodeId;i++){if(alive[i]){ringEntry=i;break;}}}
+let currentTick=0;
+function init(){
+  nextNodeId=0;nodeCount=0;freePool.length=0;ringEntry=-1;currentTick=0;
+  alive.fill(0);nxt.fill(-1);prv.fill(-1);lin.fill(-1);
+  const total=N_FOUNDERS*INIT_PER_FOUNDER,angleStep=(2*Math.PI)/total,ids=new Array(total);
+  for(let k=0;k<total;k++){
+    const f=Math.floor(k/INIT_PER_FOUNDER),angle=k*angleStep,id=allocNode();
+    px[id]=Math.cos(angle)*RING_RADIUS;py[id]=Math.sin(angle)*RING_RADIUS;ax[id]=ay[id]=0;
+    lin[id]=f;nodeAge[id]=0;alive[id]=1;
+    genomes[id]=schema.makeGenome({hue:FOUNDER_HUES[f],threshold:FOUNDER_THRESHOLDS[f],growth:FOUNDER_GROWTHS[f],jitter:0.008});
+    ids[k]=id;nodeCount++;registry.recordBirth(f,0);
+  }
+  for(let k=0;k<total;k++){nxt[ids[k]]=ids[(k+1)%total];prv[ids[k]]=ids[(k-1+total)%total];}
+  ringEntry=ids[0];
+}
+const REP_RANGE=0.09,REP_RANGE2=0.09*0.09,REP_STR=0.00028,ATT_STR=0.018,DISK_LIMIT=0.46,DISK_STR=0.025;
+const aliveIds=[];let aliveLen=0;
+function gatherAlive(){aliveLen=0;for(let i=0;i<nextNodeId;i++){if(alive[i])aliveIds[aliveLen++]=i;}}
+function physicsStep(){
+  for(let k=0;k<aliveLen;k++)ax[aliveIds[k]]=ay[aliveIds[k]]=0;
+  for(let a=0;a<aliveLen;a++){const i=aliveIds[a];for(let b=a+1;b<aliveLen;b++){const j=aliveIds[b];const dx=px[i]-px[j],dy=py[i]-py[j],d2=dx*dx+dy*dy;if(d2<REP_RANGE2&&d2>1e-9){const inv=REP_STR/(d2*Math.sqrt(d2)+1e-9);ax[i]+=dx*inv;ay[i]+=dy*inv;ax[j]-=dx*inv;ay[j]-=dy*inv;}}}
+  for(let k=0;k<aliveLen;k++){const i=aliveIds[k],n=nxt[i],p=prv[i];if(n!==-1&&alive[n]){ax[i]+=(px[n]-px[i])*ATT_STR;ay[i]+=(py[n]-py[i])*ATT_STR;}if(p!==-1&&alive[p]){ax[i]+=(px[p]-px[i])*ATT_STR;ay[i]+=(py[p]-py[i])*ATT_STR;}}
+  const rng=schema._rng;
+  for(let k=0;k<aliveLen;k++){const i=aliveIds[k],j=genomes[i].jitter;ax[i]+=(rng()-0.5)*j;ay[i]+=(rng()-0.5)*j;const r=Math.sqrt(px[i]*px[i]+py[i]*py[i]);if(r>DISK_LIMIT*0.85){const push=(r-DISK_LIMIT*0.85)*DISK_STR;ax[i]-=px[i]/r*push;ay[i]-=py[i]/r*push;}px[i]=Math.max(-DISK_LIMIT,Math.min(DISK_LIMIT,px[i]+ax[i]));py[i]=Math.max(-DISK_LIMIT,Math.min(DISK_LIMIT,py[i]+ay[i]));nodeAge[i]++;}
+}
+const MAX_SPLIT_QUEUE=100,splitQueue=new Int32Array(MAX_SPLIT_QUEUE*3);let splitLen=0;
+function growthDeathStep(){
+  if(aliveLen<3)return;splitLen=0;const rng=schema._rng;
+  for(let k=0;k<aliveLen;k++){const i=aliveIds[k];if(nodeCount>=MAX_NODES-5||splitLen>=MAX_SPLIT_QUEUE-1)break;const g=genomes[i];const energy=Math.max(0,EnergyField.sample(px[i],py[i]));EnergyField.deposit(px[i],py[i],-0.035);if(energy>g.threshold&&rng()<g.growth*0.028){const useNext=rng()<0.5,nbr=useNext?nxt[i]:prv[i];if(nbr!==-1&&alive[nbr]){const qi=splitLen*3;splitQueue[qi]=i;splitQueue[qi+1]=nbr;splitQueue[qi+2]=lin[i];splitLen++;}}}
+  for(let s=0;s<splitLen;s++){if(nodeCount>=MAX_NODES-2)break;const qi=s*3,afterId=splitQueue[qi],neighborId=splitQueue[qi+1],lineageId=splitQueue[qi+2];if(!alive[afterId]||!alive[neighborId])continue;const newId=allocNode();if(newId===-1)break;px[newId]=(px[afterId]+px[neighborId])*0.5+(rng()-0.5)*0.003;py[newId]=(py[afterId]+py[neighborId])*0.5+(rng()-0.5)*0.003;ax[newId]=ay[newId]=0;lin[newId]=lineageId;nodeAge[newId]=0;alive[newId]=1;genomes[newId]=schema.inherit(genomes[afterId],genomes[neighborId]);insertAfter(afterId,newId);registry.recordBirth(lineageId,currentTick);nodeCount++;}
+  const toDie=[];for(let k=0;k<aliveLen;k++){const i=aliveIds[k],energy=Math.max(EnergyField.sample(px[i],py[i]),0.003),deathP=0.0015/energy;if(rng()<deathP&&nodeCount>6)toDie.push(i);}
+  for(const id of toDie){if(!alive[id])continue;const lineageId=lin[id];if(nodeCount<=4)break;removeFromRing(id);registry.recordDeath(lineageId,currentTick);}
+}
+const hueBuffer=new Float32Array(MAX_NODES);
+function updateStats(){for(let f=0;f<N_FOUNDERS;f++){if(registry.isExtinct(f))continue;let n=0;for(let k=0;k<aliveLen;k++){const i=aliveIds[k];if(lin[i]===f)hueBuffer[n++]=genomes[i].hue;}if(n>0)registry.updateMeanTrait(f,'hue',G.circularMean(Array.prototype.slice.call(hueBuffer,0,n),[0,360]));}
+}
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const W=900,H=680,SIM_W=660,CX=330,CY=340,SCALE=296,STRIP_X=672,STRIP_W=218;
+canvas.width=W;canvas.height=H;
+function toSx(u){return CX+u*SCALE;}function toSy(u){return CY+u*SCALE;}
+function hslA(hue,s,l,a){return`hsla(${hue|0},${s}%,${l}%,${a})`;}
+function drawBrackets(x,y,w,h,len,col){ctx.strokeStyle=col;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,y+len);ctx.lineTo(x,y);ctx.lineTo(x+len,y);ctx.stroke();ctx.beginPath();ctx.moveTo(x+w-len,y);ctx.lineTo(x+w,y);ctx.lineTo(x+w,y+len);ctx.stroke();ctx.beginPath();ctx.moveTo(x,y+h-len);ctx.lineTo(x,y+h);ctx.lineTo(x+len,y+h);ctx.stroke();ctx.beginPath();ctx.moveTo(x+w-len,y+h);ctx.lineTo(x+w,y+h);ctx.lineTo(x+w,y+h-len);ctx.stroke();}
+function renderFrame(){
+  ctx.fillStyle='#16120e';ctx.fillRect(0,0,W,H);
+  EnergyField.render(ctx,CX,CY,SCALE);
+  ctx.beginPath();ctx.arc(CX,CY,SCALE*DISK_LIMIT,0,Math.PI*2);ctx.strokeStyle='rgba(200,184,162,0.07)';ctx.lineWidth=1;ctx.stroke();
+  ctx.lineWidth=2.2;
+  for(let k=0;k<aliveLen;k++){const i=aliveIds[k],j=nxt[i];if(j===-1||!alive[j])continue;const hMid=G.circularMean([genomes[i].hue,genomes[j].hue],[0,360]);ctx.beginPath();ctx.moveTo(toSx(px[i]),toSy(py[i]));ctx.lineTo(toSx(px[j]),toSy(py[j]));ctx.strokeStyle=hslA(hMid,72,66,0.82);ctx.stroke();}
+  for(let k=0;k<aliveLen;k++){const i=aliveIds[k];ctx.beginPath();ctx.arc(toSx(px[i]),toSy(py[i]),2.2,0,Math.PI*2);ctx.fillStyle=hslA(genomes[i].hue,70,72,0.90);ctx.fill();}
+  ctx.fillStyle='rgba(22,18,14,0.88)';ctx.fillRect(STRIP_X-6,0,W-STRIP_X+6,H);
+  ctx.font='11px "JetBrains Mono",monospace';ctx.fillStyle='rgba(200,184,162,0.38)';ctx.fillText('LINEAGES',STRIP_X+4,22);
+  const snap=registry.snapshot(currentTick),stats_ef=EnergyField.stats();
+  snap.forEach((s,row)=>{
+    const y=38+row*98,fHue=FOUNDER_HUES[s.id],mHue=s.meanTrait.hue??fHue,st=s.status;
+    const barW=STRIP_W-16,frac=s.peak>0?Math.min(1,s.count/s.peak):0;
+    const col=st==='extinct'?'rgba(200,184,162,0.18)':st==='fading'?hslA(mHue,45,50,0.7):hslA(mHue,70,62,0.85);
+    ctx.fillStyle='rgba(200,184,162,0.06)';ctx.fillRect(STRIP_X+4,y,barW,5);
+    ctx.fillStyle=col;ctx.fillRect(STRIP_X+4,y,barW*frac,5);
+    ctx.fillStyle=st==='extinct'?'rgba(200,184,162,0.15)':hslA(mHue,65,58,1.0);ctx.fillRect(STRIP_X+4,y+9,10,10);
+    ctx.font='10px "JetBrains Mono",monospace';ctx.fillStyle=col;ctx.fillText(`L${s.id}  ${st.toUpperCase().slice(0,3)}`,STRIP_X+18,y+19);
+    ctx.fillStyle='rgba(200,184,162,0.50)';ctx.fillText(`n=${s.count}  pk=${s.peak}`,STRIP_X+4,y+34);ctx.fillText(`age ${s.age}`,STRIP_X+4,y+47);
+    const drift=G.signedCircularDiff(mHue,fHue,[0,360]);
+    ctx.fillStyle=st==='extinct'?'rgba(200,184,162,0.25)':(Math.abs(drift)<15?'rgba(200,184,162,0.50)':drift>0?'rgba(255,190,100,0.80)':'rgba(100,190,255,0.80)');
+    ctx.fillText(`hue ${Math.round(mHue)}° Δ${drift>=0?'+':''}${Math.round(drift)}°`,STRIP_X+4,y+60);
+    ctx.fillStyle='rgba(200,184,162,0.08)';ctx.fillRect(STRIP_X+4,y+72,barW,1);
+  });
+  ctx.font='10px "JetBrains Mono",monospace';ctx.fillStyle='rgba(200,184,162,0.30)';
+  const efY=38+snap.length*98+8;if(efY<H-50){ctx.fillText(`field μ ${stats_ef.mean.toFixed(3)}`,STRIP_X+4,efY);ctx.fillText(`max ${stats_ef.max.toFixed(3)}`,STRIP_X+4,efY+14);}
+  drawBrackets(8,8,SIM_W-16,H-16,18,'rgba(200,184,162,0.22)');
+  ctx.font='italic 12px "Cormorant Garamond",Georgia,serif';ctx.fillStyle='rgba(200,184,162,0.45)';
+  ctx.fillText(`Lineage  ·  tick ${currentTick}  ·  ${nodeCount} nodes  ·  ${registry.aliveCount()} lineages alive`,18,H-14);
+}
+function simStep(){EnergyField.step();gatherAlive();physicsStep();gatherAlive();growthDeathStep();gatherAlive();updateStats();updateRingEntry();currentTick++;}
+let lastTime=0;const TARGET_MS=33;
+function loop(ts){requestAnimationFrame(loop);if(ts-lastTime<TARGET_MS)return;lastTime=ts;simStep();simStep();renderFrame();}
+init();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
