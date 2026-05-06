@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wake — Heritage — UMAT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;1,400&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0e1018;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Cormorant Garamond', Georgia, serif;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<script>
+/**
+ * UMAT.Genome v1.0.0
+ * Heritable trait dynamics for spatially-embedded compositional systems.
+ *
+ * Provides: TraitSchema, MutationKernels, Inheritance, LineageRegistry,
+ *           circularMean, signedCircularDiff, gauss, makeXorshift32
+ *
+ * Single file, no dependencies, deterministic given a seeded PRNG.
+ * Matches EnergyField library shape: factory functions, typed arrays,
+ * self-contained visualization utilities.
+ */
+(function (global) {
+  'use strict';
+
+  const UMAT = global.UMAT || (global.UMAT = {});
+
+  UMAT.Genome = (() => {
+
+    // =========================================================================
+    // PRNG
+    // =========================================================================
+
+    /**
+     * xorshift32 PRNG. Returns a function () => [0, 1).
+     * Deterministic given the same seed. Suitable for injection into TraitSchema.
+     */
+    function makeXorshift32(seed) {
+      let s = (seed >>> 0) || 1;
+      return function xorshift32() {
+        s ^= s << 13;
+        s ^= s >>> 17;
+        s ^= s << 5;
+        return (s >>> 0) / 4294967296;
+      };
+    }
+
+    // =========================================================================
+    // SAMPLING
+    // =========================================================================
+
+    /**
+     * Box-Muller standard normal sample. Returns one N(0,1) variate per call.
+     * Consumes two rng calls; does not cache the second variate — keeps the
+     * rng stream predictable for deterministic replay.
+     */
+    function gauss(rng) {
+      const u1 = Math.max(rng(), 1e-10); // avoid log(0)
+      const u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+
+    // =========================================================================
+    // CIRCULAR MATH
+    // =========================================================================
+
+    /**
+     * Wrap a value into [range[0], range[1]).
+     */
+    function wrapCircular(value, range) {
+      const span = range[1] - range[0];
+      return ((value - range[0]) % span + span) % span + range[0];
+    }
+
+    /**
+     * Circular mean of an array of values in the given range.
+     * Uses atan2 of summed unit vectors — correct across wrap boundaries.
+     * e.g. circularMean([350, 10], [0, 360]) ≈ 0, not 180.
+     */
+    function circularMean(values, range) {
+      if (!values || values.length === 0) return range[0];
+      const span = range[1] - range[0];
+      let sinSum = 0;
+      let cosSum = 0;
+      for (let i = 0; i < values.length; i++) {
+        const angle = ((values[i] - range[0]) / span) * 2 * Math.PI;
+        sinSum += Math.sin(angle);
+        cosSum += Math.cos(angle);
+      }
+      let angle = Math.atan2(sinSum, cosSum);
+      if (angle < 0) angle += 2 * Math.PI;
+      return (angle / (2 * Math.PI)) * span + range[0];
+    }
+
+    /**
+     * Signed shortest-arc difference: a - b, mapped into (-span/2, span/2].
+     * e.g. signedCircularDiff(10, 350, [0, 360]) = +20 (not -340).
+     */
+    function signedCircularDiff(a, b, range) {
+      const span = range[1] - range[0];
+      let diff = wrapCircular(a, range) - wrapCircular(b, range);
+      if (diff > span / 2) diff -= span;
+      if (diff <= -span / 2) diff += span;
+      return diff;
+    }
+
+    /**
+     * Incrementally track a circular mean without storing all samples.
+     * Returns a tracker object: { add(value), remove(value), mean() }
+     * Useful inside LineageRegistry for per-lineage running means.
+     */
+    function makeCircularMeanTracker(range) {
+      const span = range[1] - range[0];
+      let sinSum = 0;
+      let cosSum = 0;
+      let n = 0;
+      return {
+        add(value) {
+          const angle = ((value - range[0]) / span) * 2 * Math.PI;
+          sinSum += Math.sin(angle);
+          cosSum += Math.cos(angle);
+          n++;
+        },
+        remove(value) {
+          const angle = ((value - range[0]) / span) * 2 * Math.PI;
+          sinSum -= Math.sin(angle);
+          cosSum -= Math.cos(angle);
+          n = Math.max(0, n - 1);
+        },
+        reset() { sinSum = 0; cosSum = 0; n = 0; },
+        count() { return n; },
+        mean() {
+          if (n === 0) return range[0];
+          let angle = Math.atan2(sinSum, cosSum);
+          if (angle < 0) angle += 2 * Math.PI;
+          return (angle / (2 * Math.PI)) * span + range[0];
+        },
+      };
+    }
+
+    // =========================================================================
+    // MUTATION KERNELS
+    // =========================================================================
+
+    /**
+     * Pure mutation functions of (value, params, rng).
+     * Each returns a new value with stochastic perturbation applied.
+     */
+    const MutationKernels = {
+      /**
+       * Additive Gaussian noise with optional clip range.
+       * def: { sigma, clip?: [min, max] }
+       */
+      gaussian(value, sigma, rng, clip) {
+        let result = value + gauss(rng) * sigma;
+        if (clip) result = Math.max(clip[0], Math.min(clip[1], result));
+        return result;
+      },
+
+      /**
+       * Additive Gaussian noise with circular wrap.
+       * def: { sigma, range: [lo, hi] }
+       */
+      circular_gaussian(value, sigma, rng, range) {
+        const perturbed = value + gauss(rng) * sigma;
+        return wrapCircular(perturbed, range);
+      },
+
+      /**
+       * Log-normal scaling (multiplicative noise). Preserves sign for scale traits.
+       * def: { sigma, clip?: [min, max] }
+       */
+      log_normal(value, sigma, rng, clip) {
+        let result = value * Math.exp(gauss(rng) * sigma);
+        if (clip) result = Math.max(clip[0], Math.min(clip[1], result));
+        return result;
+      },
+
+      /**
+       * Uniformly samples a new value from the options array.
+       * def: { options: [...] }
+       */
+      categorical(value, options, rng) {
+        return options[Math.floor(rng() * options.length)];
+      },
+
+      /** Dispatch on kernel name string. */
+      apply(kernelName, value, def, rng) {
+        switch (kernelName) {
+          case 'gaussian':
+            return MutationKernels.gaussian(value, def.sigma, rng, def.clip);
+          case 'circular_gaussian':
+            return MutationKernels.circular_gaussian(value, def.sigma, rng, def.range);
+          case 'log_normal':
+            return MutationKernels.log_normal(value, def.sigma, rng, def.clip);
+          case 'categorical':
+            return MutationKernels.categorical(value, def.options, rng);
+          default:
+            return value;
+        }
+      },
+    };
+
+    // =========================================================================
+    // TRAIT SCHEMA
+    // =========================================================================
+
+    /**
+     * TraitSchema(traitDefs, options?) → schema
+     *
+     * traitDefs: { traitName: { kernel, sigma, range?, clip?, options? }, ... }
+     * options: { rng?, seed? }
+     *
+     * The schema object is the primary entry point for genome operations.
+     * All trait names declared in traitDefs are enforced on every genome.
+     */
+    function TraitSchema(traitDefs, options) {
+      options = options || {};
+      const rng = options.rng || makeXorshift32(options.seed != null ? options.seed : 12345);
+      const names = Object.keys(traitDefs);
+      const defs = traitDefs;
+
+      function mutateValue(name, value) {
+        const def = defs[name];
+        return MutationKernels.apply(def.kernel, value, def, rng);
+      }
+
+      const schema = {
+        /** Trait names in declaration order. */
+        traitNames() { return names.slice(); },
+
+        /** Raw trait definition for inspection. */
+        traitDef(name) { return defs[name]; },
+
+        /**
+         * Construct a genome from explicit trait values.
+         * Missing traits default to 0. Extra keys are ignored.
+         */
+        makeGenome(values) {
+          const genome = Object.create(null);
+          for (let i = 0; i < names.length; i++) {
+            const n = names[i];
+            genome[n] = values != null && values[n] !== undefined ? values[n] : 0;
+          }
+          return genome;
+        },
+
+        /**
+         * Mutate each trait independently using the schema's kernels.
+         * Returns a new genome object; parent is not modified.
+         */
+        mutate(genome) {
+          const child = Object.create(null);
+          for (let i = 0; i < names.length; i++) {
+            const n = names[i];
+            child[n] = mutateValue(n, genome[n]);
+          }
+          return child;
+        },
+
+        /**
+         * Per-trait 50/50 recombination of two genomes (no mutation).
+         * Use for blend-style inheritance; for standard inheritance use inherit().
+         */
+        blend(parentA, parentB) {
+          const child = Object.create(null);
+          for (let i = 0; i < names.length; i++) {
+            const n = names[i];
+            child[n] = rng() < 0.5 ? parentA[n] : parentB[n];
+          }
+          return child;
+        },
+
+        /**
+         * Random-parent inheritance: select one of the two parents with 50/50
+         * probability, then apply mutation. This is the CORRECT default.
+         *
+         * Parent-A-only inheritance causes clockwise lineage drift (indexing
+         * artifact, not biology). Always use this for split events.
+         */
+        inherit(parentA, parentB) {
+          const parent = rng() < 0.5 ? parentA : parentB;
+          return schema.mutate(parent);
+        },
+
+        /** Clone a genome with mutation (single-parent inheritance). */
+        clone(genome) {
+          return schema.mutate(genome);
+        },
+
+        /** The schema's internal rng — expose for Inheritance operators. */
+        _rng: rng,
+      };
+
+      return schema;
+    }
+
+    // =========================================================================
+    // INHERITANCE OPERATORS
+    // =========================================================================
+
+    /**
+     * Standalone inheritance operators for use when you need explicit control
+     * over the rng separate from the schema's. In most cases prefer
+     * schema.inherit(parentA, parentB) which uses the schema's rng automatically.
+     */
+    const Inheritance = {
+      /** Mutate a single parent. */
+      clone_with_mutation(genome, schema) {
+        return schema.mutate(genome);
+      },
+
+      /**
+       * Pick one parent uniformly at random, then mutate.
+       * rng defaults to schema._rng if not provided.
+       */
+      random_parent(parentA, parentB, schema, rng) {
+        const r = rng || schema._rng;
+        const parent = r() < 0.5 ? parentA : parentB;
+        return schema.mutate(parent);
+      },
+
+      /** Per-trait coin-flip recombination without mutation. */
+      blend(parentA, parentB, schema) {
+        return schema.blend(parentA, parentB);
+      },
+    };
+
+    // =========================================================================
+    // LINEAGE REGISTRY
+    // =========================================================================
+
+    /**
+     * LineageRegistry(nFounders, options?) → registry
+     *
+     * Tracks per-lineage counts, peaks, lifespans, and optional trait means.
+     * Uses typed arrays throughout to avoid GC churn at high node counts.
+     *
+     * options: {
+     *   trackTraits?: string[]       — trait names to track means for
+     *   schema?: TraitSchema         — if provided, uses schema to detect circular traits
+     *   fadingThreshold?: number     — fraction of peak below which status → "fading" (default 0.25)
+     * }
+     *
+     * Lifecycle events must be reported by the consumer (the artifact):
+     *   recordBirth(lineageId, tick)                       — node born into this lineage
+     *   recordDeath(lineageId, tick)                       — node died in this lineage
+     *   updateMeanTrait(lineageId, traitName, meanValue)   — store pre-computed mean
+     *
+     * The registry does not compute means itself; use circularMean() or the
+     * makeCircularMeanTracker() utility if you need in-place incremental tracking.
+     *
+     * snapshot(currentTick) → [{ id, count, peak, age, bornTick, extinctTick, meanTrait }]
+     */
+    function LineageRegistry(nFounders, options) {
+      options = options || {};
+      const N = nFounders;
+      const trackTraits = options.trackTraits || [];
+      const M = trackTraits.length;
+      const fadingThreshold = options.fadingThreshold != null ? options.fadingThreshold : 0.25;
+
+      // Build trait index for O(1) lookup
+      const traitIndex = Object.create(null);
+      for (let i = 0; i < M; i++) traitIndex[trackTraits[i]] = i;
+
+      // --- Typed arrays ---
+      const counts      = new Int32Array(N);      // current live node count
+      const peaks       = new Int32Array(N);      // peak count ever seen
+      const bornTick    = new Int32Array(N);      // tick of first birth; -1 if never born
+      const extinctTick = new Int32Array(N);      // tick of extinction; -1 if still alive
+      const meanTraits  = new Float32Array(N * M);// [lineageId * M + traitIdx]
+
+      // Initialise sentinels
+      bornTick.fill(-1);
+      extinctTick.fill(-1);
+
+      const registry = {
+        /**
+         * Report a new node born into lineageId at the given tick.
+         * Sets bornTick on first call, updates count and peak.
+         */
+        recordBirth(lineageId, tick) {
+          if (bornTick[lineageId] === -1) bornTick[lineageId] = tick;
+          if (extinctTick[lineageId] !== -1) extinctTick[lineageId] = -1; // revived
+          counts[lineageId]++;
+          if (counts[lineageId] > peaks[lineageId]) peaks[lineageId] = counts[lineageId];
+        },
+
+        /**
+         * Report a node death in lineageId at the given tick.
+         * Records extinctTick when count reaches zero — the only reliable
+         * way to know when extinction happened for downstream Phylogeny work.
+         */
+        recordDeath(lineageId, tick) {
+          counts[lineageId]--;
+          if (counts[lineageId] < 0) counts[lineageId] = 0;
+          if (counts[lineageId] === 0) extinctTick[lineageId] = tick;
+        },
+
+        /**
+         * Store a pre-computed trait mean for this lineage.
+         * For circular traits use circularMean() to compute the value first.
+         * Called once per tick per lineage (not once per node).
+         */
+        updateMeanTrait(lineageId, traitName, value) {
+          const idx = traitIndex[traitName];
+          if (idx === undefined) return;
+          meanTraits[lineageId * M + idx] = value;
+        },
+
+        // --- Query API ---
+
+        count(lineageId) { return counts[lineageId]; },
+        peak(lineageId)  { return peaks[lineageId]; },
+
+        isExtinct(lineageId) { return extinctTick[lineageId] !== -1; },
+        isBorn(lineageId)    { return bornTick[lineageId] !== -1; },
+
+        /**
+         * Status string for a lineage.
+         * "extinct"  — count has hit zero
+         * "fading"   — count < fadingThreshold * peak
+         * "thriving" — otherwise
+         */
+        status(lineageId) {
+          if (extinctTick[lineageId] !== -1) return 'extinct';
+          if (counts[lineageId] < peaks[lineageId] * fadingThreshold) return 'fading';
+          return 'thriving';
+        },
+
+        /** Number of lineages that have been born and are not yet extinct. */
+        aliveCount() {
+          let n = 0;
+          for (let i = 0; i < N; i++) {
+            if (bornTick[i] !== -1 && extinctTick[i] === -1) n++;
+          }
+          return n;
+        },
+
+        /** Number of lineages that have gone extinct. */
+        extinctCount() {
+          let n = 0;
+          for (let i = 0; i < N; i++) {
+            if (extinctTick[i] !== -1) n++;
+          }
+          return n;
+        },
+
+        /** Number of lineages registered (all IDs 0…nFounders-1). */
+        size() { return N; },
+
+        /**
+         * Snapshot of all born lineages at currentTick.
+         * Returns array of plain objects safe to serialise.
+         * age = currentTick - bornTick (or extinctTick - bornTick if extinct).
+         */
+        snapshot(currentTick) {
+          currentTick = currentTick || 0;
+          const result = [];
+          for (let i = 0; i < N; i++) {
+            if (bornTick[i] === -1) continue;
+            const extinct = extinctTick[i];
+            const born    = bornTick[i];
+            const age     = extinct !== -1 ? extinct - born : currentTick - born;
+            const meanTrait = Object.create(null);
+            for (let j = 0; j < M; j++) {
+              meanTrait[trackTraits[j]] = meanTraits[i * M + j];
+            }
+            result.push({
+              id: i,
+              count: counts[i],
+              peak: peaks[i],
+              age,
+              bornTick: born,
+              extinctTick: extinct,
+              status: registry.status(i),
+              meanTrait,
+            });
+          }
+          return result;
+        },
+      };
+
+      return registry;
+    }
+
+    // =========================================================================
+    // PUBLIC SURFACE
+    // =========================================================================
+
+    return {
+      VERSION: '1.0.0',
+
+      // PRNG + sampling
+      makeXorshift32,
+      gauss,
+
+      // Circular math utilities
+      circularMean,
+      signedCircularDiff,
+      wrapCircular,
+      makeCircularMeanTracker,
+
+      // Mutation
+      MutationKernels,
+
+      // Schema
+      TraitSchema,
+
+      // Inheritance operators
+      Inheritance,
+
+      // Lineage tracking
+      LineageRegistry,
+    };
+
+  })(); // end UMAT.Genome IIFE
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+</script>
+<script>
+'use strict';
+
+/* ============================================================
+   WAKE — HERITAGE
+   Clifford attractor agents with heritable genomes.
+   4 Clifford parameters + 1 hue trait = 5-trait genome via UMAT.Genome.
+   Agents split periodically; lineage tracking via LineageRegistry.
+
+   Clifford attractor: x' = sin(a·y) - cos(b·x)
+                       y' = sin(c·x) - cos(d·y)
+   ============================================================ */
+
+const G = UMAT.Genome;
+
+/* ============================================================
+   GENOME SCHEMA — 5 traits
+   ============================================================ */
+const schema = G.TraitSchema({
+  hue: { kernel: 'circular_gaussian', sigma: 12,   range: [0, 360] },
+  a:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+  b:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+  c:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+  d:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+}, { seed: 77 });
+
+/* ============================================================
+   FOUNDERS — known Clifford parameters that produce vivid attractors
+   ============================================================ */
+const FOUNDER_PARAMS = [
+  { hue:  10, a: -1.7,  b: 1.8,  c: -1.9,  d: -0.4 },
+  { hue:  85, a:  1.5,  b: -1.8, c:  1.6,  d:  0.9 },
+  { hue: 195, a: -1.4,  b: 1.6,  c:  1.0,  d:  0.7 },
+  { hue: 270, a: -1.3,  b: -1.8, c: -1.9,  d: -1.0 },
+  { hue: 330, a:  1.7,  b: 0.7,  c:  1.8,  d:  1.2 },
+];
+const N_FOUNDERS  = FOUNDER_PARAMS.length;
+const MAX_AGENTS  = 20;
+
+const registry = G.LineageRegistry(N_FOUNDERS, {
+  trackTraits: ['hue', 'a'],
+  fadingThreshold: 0.25,
+});
+
+/* ============================================================
+   AGENT STRUCTURE
+   Each agent: genome, current attractor position, lineageId,
+   birth tick, age, alive.
+   ============================================================ */
+const SPLIT_INTERVAL = 220;  // ticks before an agent may split
+const MAX_AGE        = 900;  // ticks before agent naturally dies
+const STEPS_PER_TICK = 300;  // attractor iterations per agent per tick
+
+let agents = [];    // array of agent objects
+let tick   = 0;
+
+function makeAgent(genome, lineageId, born) {
+  return {
+    genome,
+    lineageId,
+    born,
+    age: 0,
+    x: (Math.random() - 0.5) * 0.4,
+    y: (Math.random() - 0.5) * 0.4,
+    alive: true,
+    // Color derived from genome hue with brightness modulated by lineage
+    get hue() { return this.genome.hue; },
+  };
+}
+
+function initAgents() {
+  agents = [];
+  tick   = 0;
+  for (let f = 0; f < N_FOUNDERS; f++) {
+    const p  = FOUNDER_PARAMS[f];
+    const genome = schema.makeGenome(p);
+    const agent  = makeAgent(genome, f, 0);
+    agents.push(agent);
+    registry.recordBirth(f, 0);
+  }
+}
+
+
+/* ============================================================
+   CLIFFORD ITERATION
+   ============================================================ */
+function cliffordStep(x, y, a, b, c, d) {
+  return {
+    x: Math.sin(a * y) - Math.cos(b * x),
+    y: Math.sin(c * x) - Math.cos(d * y),
+  };
+}
+
+
+/* ============================================================
+   CANVAS SETUP — trails on offscreen canvas
+   ============================================================ */
+const canvas  = document.getElementById('canvas');
+const ctx     = canvas.getContext('2d');
+
+const W       = 900;
+const H       = 680;
+const SIM_W   = 656;
+const STRIP_X = 662;
+const STRIP_W = W - STRIP_X - 6;
+
+// Attractor bounds are roughly [-2, 2]^2 → map to SIM_W x H
+const ATTR_SCALE = Math.min(SIM_W, H) / 4.4;
+const ATTR_CX    = SIM_W / 2;
+const ATTR_CY    = H / 2;
+
+canvas.width  = W;
+canvas.height = H;
+
+// Offscreen persistent trails canvas
+const offCanvas = document.createElement('canvas');
+offCanvas.width = SIM_W; offCanvas.height = H;
+const off = offCanvas.getContext('2d');
+
+function attrToScreen(x, y) {
+  return [ATTR_CX + x * ATTR_SCALE, ATTR_CY + y * ATTR_SCALE];
+}
+
+// Initialise offscreen to background
+off.fillStyle = '#0e1018';
+off.fillRect(0, 0, SIM_W, H);
+
+
+/* ============================================================
+   SIMULATION STEP
+   ============================================================ */
+function simStep() {
+  const rng = schema._rng;
+
+  // --- Fade trails ---
+  off.globalAlpha = 0.012;
+  off.fillStyle   = '#0e1018';
+  off.fillRect(0, 0, SIM_W, H);
+  off.globalAlpha = 1;
+
+  // --- Per-agent: iterate attractor + paint trail ---
+  for (const ag of agents) {
+    if (!ag.alive) continue;
+    const { a, b, c, d, hue } = ag.genome;
+
+    off.globalAlpha = 0.055;
+    for (let s = 0; s < STEPS_PER_TICK; s++) {
+      const nx = Math.sin(a * ag.y) - Math.cos(b * ag.x);
+      const ny = Math.sin(c * ag.x) - Math.cos(d * ag.y);
+      ag.x = nx; ag.y = ny;
+      const [sx, sy] = attrToScreen(nx, ny);
+      if (sx < 0 || sx >= SIM_W || sy < 0 || sy >= H) continue;
+      off.fillStyle = `hsla(${hue | 0},70%,68%,1)`;
+      off.fillRect(sx, sy, 1, 1);
+    }
+    off.globalAlpha = 1;
+    ag.age++;
+  }
+
+  // --- Splits ---
+  const living = agents.filter(a => a.alive);
+  const births = [];
+  for (const ag of living) {
+    if (!ag.alive) continue;
+    if (ag.age > 0 && ag.age % SPLIT_INTERVAL === 0 && agents.length < MAX_AGENTS) {
+      // Pick a random second parent from living agents (schema.inherit does 50/50)
+      const others   = living.filter(o => o !== ag);
+      const parentB  = others.length > 0 ? others[Math.floor(rng() * others.length)] : ag;
+      const childGenome = schema.inherit(ag.genome, parentB.genome);
+      const child       = makeAgent(childGenome, ag.lineageId, tick);
+      // Give child a random starting position near its parent's current attractor point
+      child.x = ag.x + (rng() - 0.5) * 0.1;
+      child.y = ag.y + (rng() - 0.5) * 0.1;
+      births.push({ child, lineageId: ag.lineageId });
+    }
+  }
+
+  for (const { child, lineageId } of births) {
+    agents.push(child);
+    registry.recordBirth(lineageId, tick);
+  }
+
+  // --- Deaths ---
+  for (const ag of agents) {
+    if (!ag.alive) continue;
+    if (ag.age >= MAX_AGE) {
+      ag.alive = false;
+      registry.recordDeath(ag.lineageId, tick);
+    }
+  }
+
+  // Prune dead agents (keep array from growing forever)
+  if (agents.length > MAX_AGENTS * 2) {
+    agents = agents.filter(a => a.alive);
+  }
+
+  // --- Stats ---
+  updateStats();
+  tick++;
+}
+
+function updateStats() {
+  for (let f = 0; f < N_FOUNDERS; f++) {
+    if (registry.isExtinct(f)) continue;
+    const liveInLineage = agents.filter(a => a.alive && a.lineageId === f);
+    if (liveInLineage.length === 0) continue;
+
+    const hues = liveInLineage.map(a => a.genome.hue);
+    registry.updateMeanTrait(f, 'hue', G.circularMean(hues, [0, 360]));
+
+    const aVals = liveInLineage.map(a => a.genome.a);
+    const meanA = aVals.reduce((s, v) => s + v, 0) / aVals.length;
+    registry.updateMeanTrait(f, 'a', meanA);
+  }
+}
+
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+function drawBrackets(x, y, w, h, len, col) {
+  ctx.strokeStyle = col; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y+len); ctx.lineTo(x, y); ctx.lineTo(x+len, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+w-len, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+len); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y+h-len); ctx.lineTo(x, y+h); ctx.lineTo(x+len, y+h); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+w-len, y+h); ctx.lineTo(x+w, y+h); ctx.lineTo(x+w, y+h-len); ctx.stroke();
+}
+
+function renderFrame() {
+  // Composite trails
+  ctx.fillStyle = '#0e1018';
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(offCanvas, 0, 0);
+
+  // Divider
+  ctx.fillStyle = 'rgba(200,184,162,0.07)';
+  ctx.fillRect(SIM_W, 0, 1, H);
+
+  // --- Diagnostic strip ---
+  ctx.fillStyle = 'rgba(14, 16, 24, 0.90)';
+  ctx.fillRect(STRIP_X, 0, W - STRIP_X, H);
+
+  ctx.font = '11px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(200,184,162,0.38)';
+  ctx.fillText('LINEAGES', STRIP_X + 6, 22);
+
+  const snap  = registry.snapshot(tick);
+  const living = agents.filter(a => a.alive);
+
+  snap.forEach((s, row) => {
+    const y    = 38 + row * 108;
+    const fHue = FOUNDER_PARAMS[s.id].hue;
+    const mHue = s.meanTrait.hue != null ? s.meanTrait.hue : fHue;
+    const mA   = s.meanTrait.a  != null ? s.meanTrait.a   : FOUNDER_PARAMS[s.id].a;
+    const st   = s.status;
+    const bw   = STRIP_W - 12;
+    const frac = s.peak > 0 ? Math.min(1, s.count / s.peak) : 0;
+
+    const col = st === 'extinct' ? 'rgba(200,184,162,0.18)'
+              : st === 'fading'  ? `hsla(${mHue|0},40%,50%,0.7)`
+              :                    `hsla(${mHue|0},68%,62%,0.88)`;
+
+    // Agent count bar
+    ctx.fillStyle = 'rgba(200,184,162,0.06)';
+    ctx.fillRect(STRIP_X + 6, y, bw, 5);
+    ctx.fillStyle = col;
+    ctx.fillRect(STRIP_X + 6, y, bw * frac, 5);
+
+    // Hue swatch
+    ctx.fillStyle = st === 'extinct' ? 'rgba(200,184,162,0.12)' : `hsla(${mHue|0},62%,56%,1)`;
+    ctx.fillRect(STRIP_X + 6, y + 9, 10, 10);
+
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.fillStyle = col;
+    ctx.fillText(`L${s.id}  ${st.toUpperCase().slice(0,3)}`, STRIP_X + 20, y + 19);
+
+    ctx.fillStyle = 'rgba(200,184,162,0.50)';
+    ctx.fillText(`n=${s.count}  pk=${s.peak}`, STRIP_X + 6, y + 34);
+    ctx.fillText(`age ${s.age}`, STRIP_X + 6, y + 47);
+
+    const hueDrift = G.signedCircularDiff(mHue, fHue, [0, 360]);
+    ctx.fillStyle = st === 'extinct' ? 'rgba(200,184,162,0.25)'
+                  : Math.abs(hueDrift) < 20 ? 'rgba(200,184,162,0.50)'
+                  : hueDrift > 0 ? 'rgba(255,190,100,0.80)' : 'rgba(100,190,255,0.80)';
+    ctx.fillText(`hΔ ${hueDrift >= 0 ? '+' : ''}${Math.round(hueDrift)}°`, STRIP_X + 6, y + 60);
+
+    ctx.fillStyle = 'rgba(200,184,162,0.40)';
+    ctx.fillText(`a=${mA.toFixed(2)}`, STRIP_X + 6, y + 73);
+
+    ctx.fillStyle = 'rgba(200,184,162,0.08)';
+    ctx.fillRect(STRIP_X + 6, y + 84, bw, 1);
+  });
+
+  // Agent count summary
+  const statY = 38 + snap.length * 108 + 8;
+  if (statY < H - 60) {
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.fillStyle = 'rgba(200,184,162,0.30)';
+    ctx.fillText(`agents ${living.length}`, STRIP_X + 6, statY);
+    ctx.fillText(`alive  ${registry.aliveCount()}`, STRIP_X + 6, statY + 14);
+    ctx.fillText(`extinct ${registry.extinctCount()}`, STRIP_X + 6, statY + 28);
+  }
+
+  // Corner brackets on sim area
+  drawBrackets(6, 6, SIM_W - 12, H - 12, 18, 'rgba(200,184,162,0.20)');
+
+  // Climate line
+  ctx.font = 'italic 12px "Cormorant Garamond", Georgia, serif';
+  ctx.fillStyle = 'rgba(200,184,162,0.42)';
+  ctx.fillText(
+    `Wake — Heritage  ·  tick ${tick}  ·  ${living.length} agents  ·  Clifford attractor`,
+    14, H - 14
+  );
+}
+
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+let lastTime = 0;
+const TARGET_MS = 40; // ~25fps (heavier per-tick computation)
+
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (ts - lastTime < TARGET_MS) return;
+  lastTime = ts;
+  simStep();
+  renderFrame();
+}
+
+initAgents();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
