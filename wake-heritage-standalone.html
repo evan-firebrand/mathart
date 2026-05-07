@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wake — Heritage — UMAT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;1,400&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0e1018;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Cormorant Garamond', Georgia, serif;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<script>
+/**
+ * UMAT.Genome v1.0.0
+ * Heritable trait dynamics for spatially-embedded compositional systems.
+ *
+ * Provides: TraitSchema, MutationKernels, Inheritance, LineageRegistry,
+ *           circularMean, signedCircularDiff, gauss, makeXorshift32
+ *
+ * Single file, no dependencies, deterministic given a seeded PRNG.
+ * Matches EnergyField library shape: factory functions, typed arrays,
+ * self-contained visualization utilities.
+ */
+(function (global) {
+  'use strict';
+
+  const UMAT = global.UMAT || (global.UMAT = {});
+
+  UMAT.Genome = (() => {
+
+    // =========================================================================
+    // PRNG
+    // =========================================================================
+
+    function makeXorshift32(seed) {
+      let s = (seed >>> 0) || 1;
+      return function xorshift32() {
+        s ^= s << 13;
+        s ^= s >>> 17;
+        s ^= s << 5;
+        return (s >>> 0) / 4294967296;
+      };
+    }
+
+    function gauss(rng) {
+      const u1 = Math.max(rng(), 1e-10);
+      const u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+
+    function wrapCircular(value, range) {
+      const span = range[1] - range[0];
+      return ((value - range[0]) % span + span) % span + range[0];
+    }
+
+    function circularMean(values, range) {
+      if (!values || values.length === 0) return range[0];
+      const span = range[1] - range[0];
+      let sinSum = 0, cosSum = 0;
+      for (let i = 0; i < values.length; i++) {
+        const angle = ((values[i] - range[0]) / span) * 2 * Math.PI;
+        sinSum += Math.sin(angle);
+        cosSum += Math.cos(angle);
+      }
+      let angle = Math.atan2(sinSum, cosSum);
+      if (angle < 0) angle += 2 * Math.PI;
+      return (angle / (2 * Math.PI)) * span + range[0];
+    }
+
+    function signedCircularDiff(a, b, range) {
+      const span = range[1] - range[0];
+      let diff = wrapCircular(a, range) - wrapCircular(b, range);
+      if (diff > span / 2) diff -= span;
+      if (diff <= -span / 2) diff += span;
+      return diff;
+    }
+
+    function makeCircularMeanTracker(range) {
+      const span = range[1] - range[0];
+      let sinSum = 0, cosSum = 0, n = 0;
+      return {
+        add(value) {
+          const angle = ((value - range[0]) / span) * 2 * Math.PI;
+          sinSum += Math.sin(angle); cosSum += Math.cos(angle); n++;
+        },
+        remove(value) {
+          const angle = ((value - range[0]) / span) * 2 * Math.PI;
+          sinSum -= Math.sin(angle); cosSum -= Math.cos(angle);
+          n = Math.max(0, n - 1);
+        },
+        reset() { sinSum = 0; cosSum = 0; n = 0; },
+        count() { return n; },
+        mean() {
+          if (n === 0) return range[0];
+          let angle = Math.atan2(sinSum, cosSum);
+          if (angle < 0) angle += 2 * Math.PI;
+          return (angle / (2 * Math.PI)) * span + range[0];
+        },
+      };
+    }
+
+    const MutationKernels = {
+      gaussian(value, sigma, rng, clip) {
+        let result = value + gauss(rng) * sigma;
+        if (clip) result = Math.max(clip[0], Math.min(clip[1], result));
+        return result;
+      },
+      circular_gaussian(value, sigma, rng, range) {
+        return wrapCircular(value + gauss(rng) * sigma, range);
+      },
+      log_normal(value, sigma, rng, clip) {
+        let result = value * Math.exp(gauss(rng) * sigma);
+        if (clip) result = Math.max(clip[0], Math.min(clip[1], result));
+        return result;
+      },
+      categorical(value, options, rng) {
+        return options[Math.floor(rng() * options.length)];
+      },
+      apply(kernelName, value, def, rng) {
+        switch (kernelName) {
+          case 'gaussian':          return MutationKernels.gaussian(value, def.sigma, rng, def.clip);
+          case 'circular_gaussian': return MutationKernels.circular_gaussian(value, def.sigma, rng, def.range);
+          case 'log_normal':        return MutationKernels.log_normal(value, def.sigma, rng, def.clip);
+          case 'categorical':       return MutationKernels.categorical(value, def.options, rng);
+          default: return value;
+        }
+      },
+    };
+
+    function TraitSchema(traitDefs, options) {
+      options = options || {};
+      const rng = options.rng || makeXorshift32(options.seed != null ? options.seed : 12345);
+      const names = Object.keys(traitDefs);
+      const defs = traitDefs;
+      function mutateValue(name, value) {
+        return MutationKernels.apply(defs[name].kernel, value, defs[name], rng);
+      }
+      const schema = {
+        traitNames() { return names.slice(); },
+        traitDef(name) { return defs[name]; },
+        makeGenome(values) {
+          const genome = Object.create(null);
+          for (let i = 0; i < names.length; i++) {
+            const n = names[i];
+            genome[n] = values != null && values[n] !== undefined ? values[n] : 0;
+          }
+          return genome;
+        },
+        mutate(genome) {
+          const child = Object.create(null);
+          for (let i = 0; i < names.length; i++) {
+            const n = names[i];
+            child[n] = mutateValue(n, genome[n]);
+          }
+          return child;
+        },
+        blend(parentA, parentB) {
+          const child = Object.create(null);
+          for (let i = 0; i < names.length; i++) {
+            const n = names[i];
+            child[n] = rng() < 0.5 ? parentA[n] : parentB[n];
+          }
+          return child;
+        },
+        inherit(parentA, parentB) {
+          const parent = rng() < 0.5 ? parentA : parentB;
+          return schema.mutate(parent);
+        },
+        clone(genome) { return schema.mutate(genome); },
+        _rng: rng,
+      };
+      return schema;
+    }
+
+    const Inheritance = {
+      clone_with_mutation(genome, schema) { return schema.mutate(genome); },
+      random_parent(parentA, parentB, schema, rng) {
+        const r = rng || schema._rng;
+        return schema.mutate(r() < 0.5 ? parentA : parentB);
+      },
+      blend(parentA, parentB, schema) { return schema.blend(parentA, parentB); },
+    };
+
+    function LineageRegistry(nFounders, options) {
+      options = options || {};
+      const N = nFounders;
+      const trackTraits = options.trackTraits || [];
+      const M = trackTraits.length;
+      const fadingThreshold = options.fadingThreshold != null ? options.fadingThreshold : 0.25;
+      const traitIndex = Object.create(null);
+      for (let i = 0; i < M; i++) traitIndex[trackTraits[i]] = i;
+      const counts      = new Int32Array(N);
+      const peaks       = new Int32Array(N);
+      const bornTick    = new Int32Array(N);
+      const extinctTick = new Int32Array(N);
+      const meanTraits  = new Float32Array(N * M);
+      bornTick.fill(-1);
+      extinctTick.fill(-1);
+      const registry = {
+        recordBirth(lineageId, tick) {
+          if (bornTick[lineageId] === -1) bornTick[lineageId] = tick;
+          if (extinctTick[lineageId] !== -1) extinctTick[lineageId] = -1;
+          counts[lineageId]++;
+          if (counts[lineageId] > peaks[lineageId]) peaks[lineageId] = counts[lineageId];
+        },
+        recordDeath(lineageId, tick) {
+          counts[lineageId]--;
+          if (counts[lineageId] < 0) counts[lineageId] = 0;
+          if (counts[lineageId] === 0) extinctTick[lineageId] = tick;
+        },
+        updateMeanTrait(lineageId, traitName, value) {
+          const idx = traitIndex[traitName];
+          if (idx === undefined) return;
+          meanTraits[lineageId * M + idx] = value;
+        },
+        count(lineageId) { return counts[lineageId]; },
+        peak(lineageId)  { return peaks[lineageId]; },
+        isExtinct(lineageId) { return extinctTick[lineageId] !== -1; },
+        isBorn(lineageId)    { return bornTick[lineageId] !== -1; },
+        status(lineageId) {
+          if (extinctTick[lineageId] !== -1) return 'extinct';
+          if (counts[lineageId] < peaks[lineageId] * fadingThreshold) return 'fading';
+          return 'thriving';
+        },
+        aliveCount() {
+          let n = 0;
+          for (let i = 0; i < N; i++) if (bornTick[i] !== -1 && extinctTick[i] === -1) n++;
+          return n;
+        },
+        extinctCount() {
+          let n = 0;
+          for (let i = 0; i < N; i++) if (extinctTick[i] !== -1) n++;
+          return n;
+        },
+        size() { return N; },
+        snapshot(currentTick) {
+          currentTick = currentTick || 0;
+          const result = [];
+          for (let i = 0; i < N; i++) {
+            if (bornTick[i] === -1) continue;
+            const extinct = extinctTick[i], born = bornTick[i];
+            const age = extinct !== -1 ? extinct - born : currentTick - born;
+            const meanTrait = Object.create(null);
+            for (let j = 0; j < M; j++) meanTrait[trackTraits[j]] = meanTraits[i * M + j];
+            result.push({ id: i, count: counts[i], peak: peaks[i], age, bornTick: born,
+              extinctTick: extinct, status: registry.status(i), meanTrait });
+          }
+          return result;
+        },
+      };
+      return registry;
+    }
+
+    return {
+      VERSION: '1.0.0',
+      makeXorshift32, gauss,
+      circularMean, signedCircularDiff, wrapCircular, makeCircularMeanTracker,
+      MutationKernels, TraitSchema, Inheritance, LineageRegistry,
+    };
+
+  })();
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+</script>
+<script>
+'use strict';
+
+const G = UMAT.Genome;
+
+const schema = G.TraitSchema({
+  hue: { kernel: 'circular_gaussian', sigma: 12,   range: [0, 360] },
+  a:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+  b:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+  c:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+  d:   { kernel: 'gaussian',          sigma: 0.10,  clip: [-2.5, 2.5] },
+}, { seed: 77 });
+
+const FOUNDER_PARAMS = [
+  { hue:  10, a: -1.7,  b: 1.8,  c: -1.9,  d: -0.4 },
+  { hue:  85, a:  1.5,  b: -1.8, c:  1.6,  d:  0.9 },
+  { hue: 195, a: -1.4,  b: 1.6,  c:  1.0,  d:  0.7 },
+  { hue: 270, a: -1.3,  b: -1.8, c: -1.9,  d: -1.0 },
+  { hue: 330, a:  1.7,  b: 0.7,  c:  1.8,  d:  1.2 },
+];
+const N_FOUNDERS  = FOUNDER_PARAMS.length;
+const MAX_AGENTS  = 20;
+
+const registry = G.LineageRegistry(N_FOUNDERS, {
+  trackTraits: ['hue', 'a'],
+  fadingThreshold: 0.25,
+});
+
+const SPLIT_INTERVAL = 220;
+const MAX_AGE        = 900;
+const STEPS_PER_TICK = 300;
+
+let agents = [];
+let tick   = 0;
+
+function makeAgent(genome, lineageId, born) {
+  return {
+    genome, lineageId, born, age: 0,
+    x: (Math.random() - 0.5) * 0.4,
+    y: (Math.random() - 0.5) * 0.4,
+    alive: true,
+    get hue() { return this.genome.hue; },
+  };
+}
+
+function initAgents() {
+  agents = []; tick = 0;
+  for (let f = 0; f < N_FOUNDERS; f++) {
+    const genome = schema.makeGenome(FOUNDER_PARAMS[f]);
+    agents.push(makeAgent(genome, f, 0));
+    registry.recordBirth(f, 0);
+  }
+}
+
+const canvas  = document.getElementById('canvas');
+const ctx     = canvas.getContext('2d');
+const W = 900, H = 680, SIM_W = 656, STRIP_X = 662;
+const STRIP_W = W - STRIP_X - 6;
+const ATTR_SCALE = Math.min(SIM_W, H) / 4.4;
+const ATTR_CX = SIM_W / 2, ATTR_CY = H / 2;
+cavas = canvas;
+canvas.width = W; canvas.height = H;
+
+const offCanvas = document.createElement('canvas');
+offCanvas.width = SIM_W; offCanvas.height = H;
+const off = offCanvas.getContext('2d');
+function attrToScreen(x, y) { return [ATTR_CX + x * ATTR_SCALE, ATTR_CY + y * ATTR_SCALE]; }
+off.fillStyle = '#0e1018'; off.fillRect(0, 0, SIM_W, H);
+
+function simStep() {
+  const rng = schema._rng;
+  off.globalAlpha = 0.012; off.fillStyle = '#0e1018'; off.fillRect(0, 0, SIM_W, H); off.globalAlpha = 1;
+  for (const ag of agents) {
+    if (!ag.alive) continue;
+    const { a, b, c, d, hue } = ag.genome;
+    off.globalAlpha = 0.055;
+    for (let s = 0; s < STEPS_PER_TICK; s++) {
+      const nx = Math.sin(a * ag.y) - Math.cos(b * ag.x);
+      const ny = Math.sin(c * ag.x) - Math.cos(d * ag.y);
+      ag.x = nx; ag.y = ny;
+      const [sx, sy] = attrToScreen(nx, ny);
+      if (sx < 0 || sx >= SIM_W || sy < 0 || sy >= H) continue;
+      off.fillStyle = `hsla(${hue | 0},70%,68%,1)`;
+      off.fillRect(sx, sy, 1, 1);
+    }
+    off.globalAlpha = 1;
+    ag.age++;
+  }
+  const living = agents.filter(a => a.alive);
+  const births = [];
+  for (const ag of living) {
+    if (!ag.alive) continue;
+    if (ag.age > 0 && ag.age % SPLIT_INTERVAL === 0 && agents.length < MAX_AGENTS) {
+      const others  = living.filter(o => o !== ag);
+      const parentB = others.length > 0 ? others[Math.floor(rng() * others.length)] : ag;
+      const child   = makeAgent(schema.inherit(ag.genome, parentB.genome), ag.lineageId, tick);
+      child.x = ag.x + (rng() - 0.5) * 0.1;
+      child.y = ag.y + (rng() - 0.5) * 0.1;
+      births.push({ child, lineageId: ag.lineageId });
+    }
+  }
+  for (const { child, lineageId } of births) { agents.push(child); registry.recordBirth(lineageId, tick); }
+  for (const ag of agents) {
+    if (!ag.alive) continue;
+    if (ag.age >= MAX_AGE) { ag.alive = false; registry.recordDeath(ag.lineageId, tick); }
+  }
+  if (agents.length > MAX_AGENTS * 2) agents = agents.filter(a => a.alive);
+  for (let f = 0; f < N_FOUNDERS; f++) {
+    if (registry.isExtinct(f)) continue;
+    const live = agents.filter(a => a.alive && a.lineageId === f);
+    if (!live.length) continue;
+    registry.updateMeanTrait(f, 'hue', G.circularMean(live.map(a => a.genome.hue), [0, 360]));
+    const aVals = live.map(a => a.genome.a);
+    registry.updateMeanTrait(f, 'a', aVals.reduce((s,v) => s+v,0) / aVals.length);
+  }
+  tick++;
+}
+
+function drawBrackets(x,y,w,h,len,col) {
+  ctx.strokeStyle=col; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(x,y+len); ctx.lineTo(x,y); ctx.lineTo(x+len,y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+w-len,y); ctx.lineTo(x+w,y); ctx.lineTo(x+w,y+len); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y+h-len); ctx.lineTo(x,y+h); ctx.lineTo(x+len,y+h); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+w-len,y+h); ctx.lineTo(x+w,y+h); ctx.lineTo(x+w,y+h-len); ctx.stroke();
+}
+
+function renderFrame() {
+  ctx.fillStyle = '#0e1018'; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(offCanvas, 0, 0);
+  ctx.fillStyle = 'rgba(200,184,162,0.07)'; ctx.fillRect(SIM_W, 0, 1, H);
+  ctx.fillStyle = 'rgba(14,16,24,0.90)'; ctx.fillRect(STRIP_X, 0, W-STRIP_X, H);
+  ctx.font = '11px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(200,184,162,0.38)'; ctx.fillText('LINEAGES', STRIP_X+6, 22);
+  const snap = registry.snapshot(tick);
+  const living = agents.filter(a => a.alive);
+  snap.forEach((s, row) => {
+    const y = 38 + row * 108;
+    const fHue = FOUNDER_PARAMS[s.id].hue;
+    const mHue = s.meanTrait.hue != null ? s.meanTrait.hue : fHue;
+    const mA   = s.meanTrait.a   != null ? s.meanTrait.a   : FOUNDER_PARAMS[s.id].a;
+    const st = s.status, bw = STRIP_W - 12;
+    const frac = s.peak > 0 ? Math.min(1, s.count / s.peak) : 0;
+    const col = st==='extinct' ? 'rgba(200,184,162,0.18)'
+              : st==='fading'  ? `hsla(${mHue|0},40%,50%,0.7)`
+              :                   `hsla(${mHue|0},68%,62%,0.88)`;
+    ctx.fillStyle='rgba(200,184,162,0.06)'; ctx.fillRect(STRIP_X+6,y,bw,5);
+    ctx.fillStyle=col; ctx.fillRect(STRIP_X+6,y,bw*frac,5);
+    ctx.fillStyle=st==='extinct'?'rgba(200,184,162,0.12)':`hsla(${mHue|0},62%,56%,1)`;
+    ctx.fillRect(STRIP_X+6,y+9,10,10);
+    ctx.font='10px "JetBrains Mono", monospace'; ctx.fillStyle=col;
+    ctx.fillText(`L${s.id}  ${st.toUpperCase().slice(0,3)}`,STRIP_X+20,y+19);
+    ctx.fillStyle='rgba(200,184,162,0.50)';
+    ctx.fillText(`n=${s.count}  pk=${s.peak}`,STRIP_X+6,y+34);
+    ctx.fillText(`age ${s.age}`,STRIP_X+6,y+47);
+    const hueDrift = G.signedCircularDiff(mHue,fHue,[0,360]);
+    ctx.fillStyle=st==='extinct'?'rgba(200,184,162,0.25)':Math.abs(hueDrift)<20?'rgba(200,184,162,0.50)':hueDrift>0?'rgba(255,190,100,0.80)':'rgba(100,190,255,0.80)';
+    ctx.fillText(`hΔ ${hueDrift>=0?'+':''}${Math.round(hueDrift)}°`,STRIP_X+6,y+60);
+    ctx.fillStyle='rgba(200,184,162,0.40)'; ctx.fillText(`a=${mA.toFixed(2)}`,STRIP_X+6,y+73);
+    ctx.fillStyle='rgba(200,184,162,0.08)'; ctx.fillRect(STRIP_X+6,y+84,bw,1);
+  });
+  const statY = 38+snap.length*108+8;
+  if (statY < H-60) {
+    ctx.font='10px "JetBrains Mono", monospace'; ctx.fillStyle='rgba(200,184,162,0.30)';
+    ctx.fillText(`agents ${living.length}`,STRIP_X+6,statY);
+    ctx.fillText(`alive  ${registry.aliveCount()}`,STRIP_X+6,statY+14);
+    ctx.fillText(`extinct ${registry.extinctCount()}`,STRIP_X+6,statY+28);
+  }
+  drawBrackets(6,6,SIM_W-12,H-12,18,'rgba(200,184,162,0.20)');
+  ctx.font='italic 12px "Cormorant Garamond", Georgia, serif'; ctx.fillStyle='rgba(200,184,162,0.42)';
+  ctx.fillText(`Wake — Heritage  ·  tick ${tick}  ·  ${living.length} agents  ·  Clifford attractor`,14,H-14);
+}
+
+let lastTime = 0;
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (ts - lastTime < 40) return;
+  lastTime = ts; simStep(); renderFrame();
+}
+initAgents(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
